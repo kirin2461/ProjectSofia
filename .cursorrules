@@ -3,17 +3,18 @@
 ## Project Context
 - **Name**: Project Sofia
 - **Stack**: Python 3.11+, FastAPI, WebSocket, Ollama (OpenAI-compatible API), Chroma, CLIPS, Coqui XTTS
-- **Dev Environment**: VDS (Linux, 8 CPU, 8GB GPU, **8GB RAM**, 75GB SSD)
+- **Dev Environment**: VDS (Linux, 8 CPU, **NO GPU**, **8GB RAM**, 75GB SSD)
 - **Target Environment**: Laptop (Windows 11, RTX 5050 8GB VRAM, 16GB RAM, Ryzen 7 260AI)
 
 ## ⚠️ Critical Constraints
-1. **Dev RAM**: 8GB on VDS — cannot run full stack simultaneously
-2. **Target RAM**: 16GB total. Windows + background = ~5GB. Available for app: ~10GB.
-3. **Target VRAM**: 8GB. qwen3:4b = ~5.7GB. XTTS = ~2GB (load on demand). Leave 0.5GB buffer.
-4. **No model larger than 4b on target by default.** 8b only as optional "deep thinking" mode.
-5. **Lazy loading**: XTTS, FER, heavy models must load on first use, not at startup.
-6. **Context limit**: 32k max (num_ctx), prefer 8k-16k for speed.
-7. **75GB is SSD (disk), NOT RAM!**
+1. **Dev has NO GPU** — cannot run Ollama, LLM, or XTTS on VDS
+2. **Dev RAM**: 8GB — cannot run full stack
+3. **Target RAM**: 16GB total. Windows + background = ~5GB. Available for app: ~10GB.
+4. **Target VRAM**: 8GB. qwen3:4b = ~5.7GB. XTTS = ~2GB (load on demand). Leave 0.5GB buffer.
+5. **No model larger than 4b on target by default.** 8b only as optional "deep thinking" mode.
+6. **Lazy loading**: XTTS, FER, heavy models must load on first use, not at startup.
+7. **Context limit**: 32k max (num_ctx), prefer 8k-16k for speed.
+8. **75GB is SSD (disk), NOT RAM!**
 
 ## Code Style
 - Type hints everywhere
@@ -35,22 +36,27 @@
 - **Safety**: CLIPS rules filter input/output
 - **Emotions**: PAD model (Pleasure, Arousal, Dominance) affects temperature/tone
 
-## Testing (on VDS with 8GB RAM)
-- Test components individually, not full stack
-- Monitor RAM: `free -h` during testing
-- Monitor VRAM: `nvidia-smi`
-- Run `scripts/benchmark_target.py` before committing
-- Target benchmark must pass: speed > 25 tok/s, VRAM < 7.5GB used, RAM < 14GB total
+## Testing (on VDS — CPU-only)
+- Syntax check: `python -m py_compile`
+- Import check: `python -c "from module import Class"`
+- Unit tests with mocks (no LLM calls)
+- NO integration tests with Ollama (no GPU)
+- NO benchmark tests (requires GPU)
+- Monitor RAM: `free -h`
 
 ## Git
 - Commit in Russian or English consistently
 - One commit = one logical change
 - Push to `main` branch
 
-## Prohibited
+## Prohibited on VDS
+- Running Ollama (no GPU, useless on CPU)
+- Testing LLM inference speed
+- Testing XTTS (requires CUDA)
+- Running full backend stack (8GB RAM insufficient)
+- Running benchmark_target.py (requires GPU)
 - Loading multiple large models simultaneously in VRAM
 - Writing models/data to git
 - Hardcoding paths (use config/settings.py)
 - Blocking the event loop
 - Assuming 75GB RAM (this is SSD, not RAM!)
-- Running full stack on VDS (8GB RAM insufficient)

@@ -1,8 +1,8 @@
 """Конфигурация Project Sofia.
 
 Поддерживает три профиля:
-- default (target): RTX 5050 8GB / 16GB RAM
-- dev: VDS с большими ресурсами
+- target: ноутбук с RTX 5050 (GPU, 16 GB RAM)
+- dev: VDS без GPU (CPU-only, 8 GB RAM)
 - local: переопределения через settings_local.py
 
 Локальные переопределения — в settings_local.py (не в git).
@@ -13,7 +13,7 @@ import os
 PROFILE = os.getenv("SOFIA_PROFILE", "target")
 
 # ═══════════════════════════════════════════════════════
-# TARGET (ноутбук) — профиль по умолчанию
+# TARGET (ноутбук) — профиль по умолчанию, единственный с GPU
 # ═══════════════════════════════════════════════════════
 TARGET = {
     "OLLAMA_HOST": "http://localhost:11434",
@@ -35,17 +35,19 @@ TARGET = {
     "DEBUG": False,
     "MAX_HISTORY": 10,
     "DECAY_LAMBDA": 0.0003,  # полураспад PAD ~40 мин
+    "HAS_GPU": True,
 }
 
 # ═══════════════════════════════════════════════════════
-# DEV (VDS) — для разработки и тестирования
+# DEV (VDS) — CPU-only, без GPU, 8 GB RAM
 # ═══════════════════════════════════════════════════════
 DEV = {
     **TARGET,
-    "MODEL_BRAIN": "qwen3:4b",  # можно переопределить в settings_local
-    "NUM_CTX": 32768,
+    "HAS_GPU": False,
     "DEBUG": True,
     "API_HOST": "0.0.0.0",
+    # На VDS не запускаем Ollama — нет GPU
+    # Эти настройки для совместимости кода
 }
 
 # ═══════════════════════════════════════════════════════

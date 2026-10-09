@@ -10,45 +10,54 @@
 
 ## 🎯 Целевое устройство (Target)
 
-**Где работает ассистент — основная машина:**
+**Где работает ассистент — единственная машина с GPU:**
 - NVIDIA RTX 5050 8 ГБ VRAM / 16 ГБ RAM
 - AMD Ryzen 7 260AI + 780M (iGPU ограничена в BIOS до 512 МБ)
 - Windows 11
 
 ## 🖥️ Среда разработки (Dev)
 
-**Где пишется и тестируется код:**
-- VDS: 8 ядер CPU / 8 ГБ GPU / **8 ГБ RAM** / 75 ГБ SSD
+**Где пишется код — CPU-only:**
+- VDS: 8 ядер CPU / **8 ГБ RAM** / 75 ГБ SSD
+- **Нет GPU** — нельзя запускать LLM и TTS
 - Linux (Ubuntu 22.04+ рекомендуется)
 
-⚠️ **Важно:** на VDS только **8 ГБ RAM** — меньше, чем на ноутбуке (16 ГБ). Нельзя запускать всё одновременно. 75 ГБ — это диск (SSD), не оперативка.
+⚠️ **Важно:**
+- На VDS **нет GPU** — Ollama будет работать на CPU (невероятно медленно)
+- На VDS только **8 ГБ RAM** — меньше, чем на ноутбуке
+- 75 ГБ — это диск (SSD), не оперативка
 
 ## ⚡ Быстрый старт
 
-### На VDS (разработка)
+### На VDS (разработка — только код, без LLM)
 ```bash
-# 1. Модели (только необходимые для текущей задачи)
-ollama pull qwen3:4b qwen3:1.7b bge-m3
-
-# 2. Зависимости
+# 1. Зависимости
 pip install -r requirements.txt
 
-# 3. Папки
+# 2. Папки
 mkdir -p data/voice_samples data/library data/memory_db data/vector_db
 
-# 4. Проверка (не запускать всё одновременно — 8 GB RAM)
-python scripts/check_ollama.py
+# 3. Линтинг и проверка синтаксиса
+python -m py_compile core/*.py memory/*.py modules/*.py main.py
 
-# 5. Запуск (только нужные сервисы)
-uvicorn main:app --host 0.0.0.0 --reload
+# 4. Юнит-тесты (без LLM — mock'и)
+# pytest tests/unit/
 ```
 
-### На ноутбуке (target)
+### На ноутбуке (target — полный запуск)
 ```bash
 # 1. Ollama (Windows): https://ollama.com/download/windows
 # 2. В PowerShell:
 ollama pull qwen3:4b qwen3:1.7b bge-m3
+
+# 3. Зависимости
 pip install -r requirements.txt
+
+# 4. Проверка
+python scripts/check_ollama.py
+python scripts/benchmark_target.py
+
+# 5. Запуск
 uvicorn main:app --host 0.0.0.0 --reload
 ```
 
@@ -75,4 +84,4 @@ uvicorn main:app --host 0.0.0.0 --reload
 
 ---
 
-**Как использовать этот репозиторий:** откройте [docs/TASKS.md](docs/TASKS.md), скопируйте задачу и вставьте в промпт вашему AI-ассистенту. Агент работает на VDS (8 GB RAM), но код пишется под ноутбук (16 GB RAM).
+**Как использовать этот репозиторий:** откройте [docs/TASKS.md](docs/TASKS.md), скопируйте задачу и вставьте в промпт вашему AI-ассистенту. Агент работает на VDS (CPU-only, 8 GB RAM), но код пишется под ноутбук (RTX 5050, 16 GB RAM).

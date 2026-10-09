@@ -2,17 +2,55 @@
 
 ## Философия
 
-- **VDS** — фабрика кода. Здесь пишется и собирается. **Но только 8 GB RAM** — нельзя запускать весь стек.
-- **Ноутбук** — дом. Здесь работает ассистент. **16 GB RAM** — здесь можно всё.
+- **VDS** — фабрика кода. Здесь пишется и собирается. **CPU-only, 8 GB RAM.**
+- **Ноутбук** — дом. Здесь работает ассистент. **RTX 5050, 16 GB RAM.**
 
-## ⚠️ Критическое предупреждение про VDS
+## ⚠️ Критические ограничения VDS
 
-VDS имеет **8 GB RAM** — меньше, чем ноутбук (16 GB).
+### Нет GPU
+- На VDS **нет видеокарты**
+- Ollama будет работать на CPU — **невероятно медленно** (1-2 ток/с вместо 40+)
+- **Не пытайтесь запускать LLM на VDS** — это бессмысленно
+- XTTS (голос) на VDS не работает — требует CUDA
 
-Что это значит:
-- Нельзя одновременно держать qwen3:4b в GPU + Chroma в RAM + XTTS + FastAPI
-- На VDS тестируйте компоненты по отдельности
-- Полная интеграция — только на ноутбуке
+### 8 GB RAM
+- Даже без GPU RAM ограничена
+- Нельзя запускать полный стек
+
+## Что делать на VDS
+
+```bash
+# ✅ Пишем код
+nano/vim/cursor core/cognitive_cycle.py
+
+# ✅ Проверяем синтаксис
+python -m py_compile core/*.py memory/*.py modules/*.py main.py
+
+# ✅ Юнит-тесты с mock (без LLM)
+# pytest tests/unit/ -v
+
+# ✅ Линтинг
+# ruff check . || flake8 .
+
+# ✅ Git
+git add . && git commit -m "feat: ..." && git push
+```
+
+## Что НЕ делать на VDS
+
+```bash
+# ❌ Не запускай Ollama для тестов
+ollama run qwen3:4b  # Будет 1 ток/с на CPU — бессмысленно
+
+# ❌ Не запускай полный бэкенд
+uvicorn main:app  # Потребует Ollama, не хватит RAM
+
+# ❌ Не тестируй XTTS
+python modules/tts_engine.py  # Нет CUDA, упадёт
+
+# ❌ Не запускай benchmark_target.py
+# Он предназначен только для ноутбука с GPU
+```
 
 ## Подготовка VDS
 
@@ -20,24 +58,17 @@ VDS имеет **8 GB RAM** — меньше, чем ноутбук (16 GB).
 # 1. Базовое окружение (Ubuntu/Debian)
 sudo apt update && sudo apt install -y python3-pip python3-venv git
 
-# 2. Ollama (Linux)
-curl -fsSL https://ollama.com/install.sh | sh
-
-# 3. Модели (по необходимости, не все сразу)
-ollama pull qwen3:4b
-# ollama pull qwen3:1.7b  # когда нужен экстрактор
-# ollama pull bge-m3      # когда нужна память
-
-# 4. Репозиторий
+# 2. Репозиторий
 git clone https://github.com/kirin2461/ProjectSofia.git
 cd ProjectSofia
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# 5. Проверка (одна модель за раз!)
-python scripts/check_ollama.py
+# 3. Готово к разработке (без LLM)
 ```
+
+**Не устанавливай Ollama на VDS** — она не нужна без GPU.
 
 ## Подготовка ноутбука (Target)
 
@@ -60,8 +91,6 @@ pip install -r requirements.txt
 
 ## Перенос кода
 
-### Вариант A: Git (рекомендуется)
-
 ```bash
 # На VDS
 git add .
@@ -80,71 +109,67 @@ git pull origin main
 | `data/memory_db/` | Локальная база | Переносить опционально |
 | `data/vector_db/` | Индексы книг | Переиндексировать на ноутбуке |
 | `data/voice_samples/` | Голос | Скопировать вручную |
-| `data/library/` | Книги | Скопировать вручную или синхронизировать |
+| `data/library/` | Книги | Скопировать вручную |
 | `data/safety_log.jsonl` | Логи | Не переносить |
 
-## Тестирование на VDS (с 8 GB RAM)
+## Тестирование
+
+### На VDS (только без LLM)
 
 ```bash
-# 1. Тест одного компонента за раз
-# Например, только когнитивный цикл без памяти:
-python -c "from core.cognitive_cycle import extract_facts; ..."
+# Синтаксис
+python -m py_compile main.py
 
-# 2. Проверка RAM во время работы
-# В другом терминале:
-watch -n 1 free -h
+# Импорты
+python -c "from core.cognitive_cycle import extract_facts; print('OK')"
 
-# 3. Если RAM заканчивается — убейте Ollama и перезапустите:
-sudo systemctl restart ollama
+# Не запускай тесты, требующие Ollama!
 ```
 
-## Тестирование на ноутбуке (полное)
+### На ноутбуке (полное)
 
 ```bash
-# На ноутбуке
+# Проверка моделей
 python scripts/check_ollama.py
+
+# Бенчмарк (VRAM, скорость, контекст)
 python scripts/benchmark_target.py
+
+# Настройка
 python scripts/setup.py
+
+# Запуск
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## Бенчмарк Target
-
-`scripts/benchmark_target.py` проверяет:
-
-1. **VRAM**: загружает qwen3:4b, проверяет < 7.5 GB
-2. **RAM**: проверяет доступную память (> 10 GB свободно на ноутбуке)
-3. **Скорость**: 10 запросов к 4b, среднее latency < 3 сек
-4. **Контекст**: 32k с qwen3:4b
-
 ## Troubleshooting
 
-### На VDS: не хватает RAM (8 GB)
-```bash
-# Симптом: OOM killer, процессы падают
-# Решения:
-# 1. Запускайте только один сервис за раз
-# 2. Остановите Ollama перед тестированием Python-кода:
-sudo systemctl stop ollama
-# 3. Используйте swap (если не настроен):
-sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+### На VDS: "CUDA not available" при тесте
+Это нормально — на VDS нет GPU. Тестируйте на ноутбуке.
+
+### На ноутбуке: Ollama не видит GPU
+```powershell
+# Проверить драйверы NVIDIA
+nvidia-smi
+# Должно быть: CUDA 12.x, драйвер 550+
 ```
 
-### На ноутбуке: не хватает RAM (16 GB)
+### На ноутбуке: не хватает RAM
 - Закрыть Chrome/Edge
-- Проверить `data/` — векторная база может разрастись
 - Уменьшить `num_ctx` в `settings.py`
 
 ## Чеклист деплоя
 
-- [ ] Код на VDS написан и протестирован по частям
+- [ ] Код на VDS написан и проверен (синтаксис)
 - [ ] `git push` выполнен
 - [ ] На ноутбуке `git pull` выполнен
 - [ ] Ollama модели скачаны
 - [ ] `voice_samples/` скопированы
 - [ ] `setup.py` прошёл без ошибок
+- [ ] `check_ollama.py` прошёл
+- [ ] `benchmark_target.py` прошёл
 - [ ] **Полное тестирование на ноутбуке пройдено**
 
 ---
 
-**Правило:** VDS = пишем код. Ноутбук = запускаем всё. На VDS 8 GB RAM — не пытайтесь запустить полный стек.
+**Правило:** VDS = пишем код. Ноутбук = запускаем всё. На VDS нет GPU — не тестируй LLM там.
