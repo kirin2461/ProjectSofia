@@ -1,0 +1,51 @@
+# Cursor Rules for Project Sofia
+
+## Project Context
+- **Name**: Project Sofia
+- **Stack**: Python 3.11+, FastAPI, WebSocket, Ollama (OpenAI-compatible API), Chroma, CLIPS, Coqui XTTS
+- **Dev Environment**: VDS (Linux, 8 CPU, 8GB GPU, 75GB RAM)
+- **Target Environment**: Laptop (Windows 11, RTX 5050 8GB, 16GB RAM, Ryzen 7 260AI)
+
+## Critical Constraints
+1. **Target RAM**: 16GB total. Windows + background = ~5GB. Available for app: ~10GB.
+2. **Target VRAM**: 8GB. qwen3:4b = ~5.7GB. XTTS = ~2GB (load on demand). Leave 0.5GB buffer.
+3. **No model larger than 4b on target by default.** 8b only as optional "deep thinking" mode.
+4. **Lazy loading**: XTTS, FER, heavy models must load on first use, not at startup.
+5. **Context limit**: 32k max (num_ctx), prefer 8k-16k for speed.
+
+## Code Style
+- Type hints everywhere
+- Docstrings for public methods
+- Async/await for I/O (Ollama API, file operations)
+- No blocking calls in FastAPI handlers
+- Use `pathlib.Path` for paths
+- Log with `logging` module, not print
+
+## Memory Rules
+- Chroma DB paths: `data/memory_db/`, `data/vector_db/`
+- Library folder: `data/library/` (PDF, EPUB, TXT)
+- Voice samples: `data/voice_samples/` (WAV, 22kHz, mono)
+- Never commit `data/`, `venv/`, `__pycache__/`, `.env`
+
+## Architecture Patterns
+- **LLM Cascade**: extractor (1.7b) → brain (4b, stream) → critic (4b)
+- **Monologue**: internal reasoning, not shown to user
+- **Safety**: CLIPS rules filter input/output
+- **Emotions**: PAD model (Pleasure, Arousal, Dominance) affects temperature/tone
+
+## Testing
+- Run `scripts/benchmark_target.py` before committing
+- Run `scripts/check_ollama.py` if Ollama issues
+- Target benchmark must pass: speed > 25 tok/s, VRAM < 7.5GB used, RAM < 14GB total
+
+## Git
+- Commit in Russian or English consistently
+- One commit = one logical change
+- Push to `main` branch
+
+## Prohibited
+- Loading multiple large models simultaneously in VRAM
+- Writing models/data to git
+- Hardcoding paths (use config/settings.py)
+- Blocking the event loop
+- Assuming 75GB RAM (this is dev, target has 16GB)
