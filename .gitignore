@@ -1,0 +1,10 @@
+data/
+config/settings_local.py
+*.wav
+*.mp3
+*.ckpt
+__pycache__/
+*.pyc
+.env
+vector_db/
+chroma_db/

@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets
+openai
+chromadb
+watchdog
+clipsty
+pymupdf
+ebooklib
+python-docx
+coqui-tts
