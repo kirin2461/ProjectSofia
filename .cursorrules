@@ -3,15 +3,17 @@
 ## Project Context
 - **Name**: Project Sofia
 - **Stack**: Python 3.11+, FastAPI, WebSocket, Ollama (OpenAI-compatible API), Chroma, CLIPS, Coqui XTTS
-- **Dev Environment**: VDS (Linux, 8 CPU, 8GB GPU, 75GB RAM)
-- **Target Environment**: Laptop (Windows 11, RTX 5050 8GB, 16GB RAM, Ryzen 7 260AI)
+- **Dev Environment**: VDS (Linux, 8 CPU, 8GB GPU, **8GB RAM**, 75GB SSD)
+- **Target Environment**: Laptop (Windows 11, RTX 5050 8GB VRAM, 16GB RAM, Ryzen 7 260AI)
 
-## Critical Constraints
-1. **Target RAM**: 16GB total. Windows + background = ~5GB. Available for app: ~10GB.
-2. **Target VRAM**: 8GB. qwen3:4b = ~5.7GB. XTTS = ~2GB (load on demand). Leave 0.5GB buffer.
-3. **No model larger than 4b on target by default.** 8b only as optional "deep thinking" mode.
-4. **Lazy loading**: XTTS, FER, heavy models must load on first use, not at startup.
-5. **Context limit**: 32k max (num_ctx), prefer 8k-16k for speed.
+## ⚠️ Critical Constraints
+1. **Dev RAM**: 8GB on VDS — cannot run full stack simultaneously
+2. **Target RAM**: 16GB total. Windows + background = ~5GB. Available for app: ~10GB.
+3. **Target VRAM**: 8GB. qwen3:4b = ~5.7GB. XTTS = ~2GB (load on demand). Leave 0.5GB buffer.
+4. **No model larger than 4b on target by default.** 8b only as optional "deep thinking" mode.
+5. **Lazy loading**: XTTS, FER, heavy models must load on first use, not at startup.
+6. **Context limit**: 32k max (num_ctx), prefer 8k-16k for speed.
+7. **75GB is SSD (disk), NOT RAM!**
 
 ## Code Style
 - Type hints everywhere
@@ -33,9 +35,11 @@
 - **Safety**: CLIPS rules filter input/output
 - **Emotions**: PAD model (Pleasure, Arousal, Dominance) affects temperature/tone
 
-## Testing
+## Testing (on VDS with 8GB RAM)
+- Test components individually, not full stack
+- Monitor RAM: `free -h` during testing
+- Monitor VRAM: `nvidia-smi`
 - Run `scripts/benchmark_target.py` before committing
-- Run `scripts/check_ollama.py` if Ollama issues
 - Target benchmark must pass: speed > 25 tok/s, VRAM < 7.5GB used, RAM < 14GB total
 
 ## Git
@@ -48,4 +52,5 @@
 - Writing models/data to git
 - Hardcoding paths (use config/settings.py)
 - Blocking the event loop
-- Assuming 75GB RAM (this is dev, target has 16GB)
+- Assuming 75GB RAM (this is SSD, not RAM!)
+- Running full stack on VDS (8GB RAM insufficient)

@@ -10,56 +10,45 @@
 
 ## 🎯 Целевое устройство (Target)
 
-**Где работает ассистент:**
-- NVIDIA RTX 5050 8 ГБ / 16 ГБ RAM
+**Где работает ассистент — основная машина:**
+- NVIDIA RTX 5050 8 ГБ VRAM / 16 ГБ RAM
 - AMD Ryzen 7 260AI + 780M (iGPU ограничена в BIOS до 512 МБ)
 - Windows 11
-
-Это устройство с жёсткими ограничениями. Все решения про архитектуру, размер моделей и потребление ресурсов принимаются под это железо.
 
 ## 🖥️ Среда разработки (Dev)
 
 **Где пишется и тестируется код:**
-- VDS: 8 ядер CPU / 8 ГБ GPU / 75 ГБ RAM
+- VDS: 8 ядер CPU / 8 ГБ GPU / **8 ГБ RAM** / 75 ГБ SSD
 - Linux (Ubuntu 22.04+ рекомендуется)
-- Полный набор инструментов для сборки
 
-На VDS можно запускать более тяжёлые модели для тестирования, но **финальный код должен укладываться в лимиты ноутбука**.
+⚠️ **Важно:** на VDS только **8 ГБ RAM** — меньше, чем на ноутбуке (16 ГБ). Нельзя запускать всё одновременно. 75 ГБ — это диск (SSD), не оперативка.
 
 ## ⚡ Быстрый старт
 
 ### На VDS (разработка)
 ```bash
-# 1. Модели
+# 1. Модели (только необходимые для текущей задачи)
 ollama pull qwen3:4b qwen3:1.7b bge-m3
 
 # 2. Зависимости
 pip install -r requirements.txt
 
-# 3. Голос: положите WAV в data/voice_samples/
-mkdir -p data/voice_samples
+# 3. Папки
+mkdir -p data/voice_samples data/library data/memory_db data/vector_db
 
-# 4. Библиотека: сюда кидайте книги
-mkdir -p data/library
+# 4. Проверка (не запускать всё одновременно — 8 GB RAM)
+python scripts/check_ollama.py
 
-# 5. Проверка совместимости с ноутбуком
-python scripts/benchmark_target.py
-
-# 6. Запуск
+# 5. Запуск (только нужные сервисы)
 uvicorn main:app --host 0.0.0.0 --reload
 ```
 
 ### На ноутбуке (target)
 ```bash
-# 1. Клонировать репозиторий с VDS
-# 2. Установить Ollama (Windows): https://ollama.com/download/windows
-# 3. В PowerShell:
+# 1. Ollama (Windows): https://ollama.com/download/windows
+# 2. В PowerShell:
 ollama pull qwen3:4b qwen3:1.7b bge-m3
-
-# 4. Зависимости
 pip install -r requirements.txt
-
-# 5. Запуск
 uvicorn main:app --host 0.0.0.0 --reload
 ```
 
@@ -67,6 +56,7 @@ uvicorn main:app --host 0.0.0.0 --reload
 - [Архитектура](docs/ARCHITECTURE.md) — поток данных, компоненты, среды
 - [Дорожная карта](docs/ROADMAP.md) — фазы и чеклисты
 - [Деплой](docs/DEPLOYMENT.md) — как переносить с VDS на ноутбук
+- [Промпт для агента](docs/AGENT_PROMPT.md) — инструкция AI-разработчику на VDS
 - [Задачи для нейросети](docs/TASKS.md) — готовые промпты для AI-ассистентов
 
 ## 🗂️ Структура
@@ -85,4 +75,4 @@ uvicorn main:app --host 0.0.0.0 --reload
 
 ---
 
-**Как использовать этот репозиторий:** откройте [docs/TASKS.md](docs/TASKS.md), скопируйте задачу и вставьте в промпт вашему AI-ассистенту. Агент работает на VDS, но код пишется под ноутбук.
+**Как использовать этот репозиторий:** откройте [docs/TASKS.md](docs/TASKS.md), скопируйте задачу и вставьте в промпт вашему AI-ассистенту. Агент работает на VDS (8 GB RAM), но код пишется под ноутбук (16 GB RAM).
