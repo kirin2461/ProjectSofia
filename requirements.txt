@@ -4,8 +4,11 @@ websockets
 openai
 chromadb
 watchdog
-clipsty
+clipspy
 pymupdf
 ebooklib
 python-docx
 coqui-tts
+aiofiles
+python-multipart
+numpy
