@@ -18,8 +18,9 @@ PROFILE = os.getenv("SOFIA_PROFILE", "target")
 TARGET = {
     "OLLAMA_HOST": "http://localhost:11434",
     "MODEL_BRAIN": "qwen3:4b",
-    "MODEL_EXTRACTOR": "qwen3:1.7b",
+    "MODEL_EXTRACTOR": "qwen3:1.7b",      # быстрая текстовая модель для фактов
     "MODEL_EMBED": "bge-m3",
+    "MODEL_VLM": "qwen3-vl:2b",           # мультимодальная модель (зрение + текст)
     "NUM_CTX": 32768,
     "NUM_PREDICT": 512,
     "TEMPERATURE": 0.7,
@@ -36,6 +37,13 @@ TARGET = {
     "MAX_HISTORY": 10,
     "DECAY_LAMBDA": 0.0003,  # полураспад PAD ~40 мин
     "HAS_GPU": True,
+
+    # ═══════════════════════════════════════════════════
+    # ОПЦИОНАЛЬНЫЕ РАСШИРЕНИЯ (Phase 6)
+    # ═══════════════════════════════════════════════════
+    "VISION_ENABLED": False,       # Qwen3-VL-2B (~1.5 GB VRAM)
+    "GAME_MODE_ENABLED": False,    # pydirectinput / pyautogui
+    "STREAM_ENABLED": False,       # ffmpeg / OBS WebSocket
 }
 
 # ═══════════════════════════════════════════════════════
@@ -75,3 +83,24 @@ except ImportError:
 # Производные значения
 # ═══════════════════════════════════════════════════════
 OLLAMA_API = f"{OLLAMA_HOST}/v1"
+
+# ═══════════════════════════════════════════════════════
+# УМНАЯ ОПТИМИЗАЦИЯ VRAM
+# ═══════════════════════════════════════════════════════
+# Если зрение ВКЛЮЧЕНО — Qwen3-VL-2B уже загружена в VRAM (~1.5 GB).
+# Зачем держать ещё qwen3:1.7b (~1.2 GB) для экстракции фактов?
+# Используем VLM как экстрактор — экономим 1.2 GB VRAM!
+#
+# Логика:
+#   VISION_ENABLED = False → экстрактор = qwen3:1.7b (быстро, дёшево)
+#   VISION_ENABLED = True  → экстрактор = qwen3-vl:2b (уже в памяти)
+# ═══════════════════════════════════════════════════════
+
+if VISION_ENABLED:
+    MODEL_EXTRACTOR_ACTIVE = MODEL_VLM
+    # Примечание: VLM на тексте чуть медленнее чисто текстовой 1.7b,
+    # но экономия 1.2 GB VRAM стоит того.
+    # Если скорость критична — переопределите в settings_local.py:
+    #   MODEL_EXTRACTOR_ACTIVE = "qwen3:1.7b"
+else:
+    MODEL_EXTRACTOR_ACTIVE = MODEL_EXTRACTOR
