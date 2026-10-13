@@ -1,16 +1,21 @@
 # Project Sofia
 
-**SOAR + LLM CASCADE + COMPUTER VISION** — автономный ИИ-ассистент, игрок и стример.
+**SOAR + LLM CASCADE** — автономный ИИ-ассистент с когнитивной архитектурой.
 
+**Основа (всегда включено):**
 - **SOAR**: цели, импассы, чанкинг (обучение навыкам)
 - **LLM Cascade**: qwen3:1.7b (экстрактор) → qwen3:4b (мозг + критик)
 - **CLIPS**: детерминированная безопасность и жизненный цикл памяти
 - **Chroma**: эпизодическая память + библиотека книг
 - **XTTS v2**: клонирование голоса, полностью локально
+
+**Опционально (расширения):**
 - **Qwen3-VL-2B**: компьютерное зрение — "глаза" Софии
 - **YOLOv8-nano**: рефлексивное зрение — детекция объектов в реальном времени
 - **Game Control**: управление мышью и клавиатурой — "руки" Софии
 - **Streaming Engine**: захват, оверлей, трансляция на Twitch/YouTube
+
+> Расширения отключаются в конфиге. Базовый ассистент работает без них.
 
 ## 🎯 Целевое устройство (Target)
 
@@ -19,16 +24,18 @@
 - AMD Ryzen 7 260AI + 780M (iGPU ограничена в BIOS до 512 МБ)
 - Windows 11
 
-### VRAM-бюджет в режиме "Игра"
+### VRAM-бюджет (базовый режим)
 ```
 qwen3:4b (мозг)        ~5.7 GB  ← постоянно
-Qwen3-VL-2B (глаза)    ~1.5 GB  ← постоянно
-YOLOv8-nano (рефлексы) ~0.1 GB  ← постоянно
+XTTS v2 (голос)        ~2.0 GB  ← по требованию, потом выгрузка
 ────────────────────────────────
-Итого:                 ~7.3 GB  ← влезает!
+Итого база:            ~5.7 GB  ← влезает с запасом
 
-XTTS v2 (~2 GB):       выгружается во время игры
-                        (голос отключается или заменяется на beep)
+Опционально (игра):
+Qwen3-VL-2B (глаза)    ~1.5 GB  ← если включено
+YOLOv8-nano (рефлексы) ~0.1 GB  ← если включено
+────────────────────────────────
+Итого с играми:        ~7.3 GB  ← тоже влезает
 ```
 
 ## 🖥️ Среда разработки (Dev)
@@ -51,7 +58,7 @@ XTTS v2 (~2 GB):       выгружается во время игры
 pip install -r requirements.txt
 
 # 2. Папки
-mkdir -p data/voice_samples data/library data/memory_db data/vector_db data/streams data/game_profiles
+mkdir -p data/voice_samples data/library data/memory_db data/vector_db
 
 # 3. Линтинг и проверка синтаксиса
 python -m py_compile core/*.py memory/*.py modules/*.py main.py
@@ -66,59 +73,39 @@ python -m py_compile core/*.py memory/*.py modules/*.py main.py
 # 2. В PowerShell:
 ollama pull qwen3:4b qwen3:1.7b bge-m3
 
-# 3. Для зрения (опционально, если нужен VLM):
-ollama pull qwen3-vl:2b
-
-# 4. Зависимости
+# 3. Зависимости
 pip install -r requirements.txt
 
-# 5. Проверка
+# 4. Проверка
 python scripts/check_ollama.py
 python scripts/benchmark_target.py
 
-# 6. Запуск (базовый чат)
+# 5. Запуск базового ассистента
 uvicorn main:app --host 0.0.0.0 --reload
 
-# 7. Запуск игрового режима (в коде)
-# WebSocket: {"type": "game", "action": "start", "profile": "minecraft"}
+# 6. Опционально: включить зрение/игры
+# В config/settings_local.py:
+#   VISION_ENABLED = True
+#   GAME_MODE_ENABLED = True
+#   STREAM_ENABLED = True
 ```
 
-## 🎮 Игровой режим
+## 🎮 Игровой режим (опционально)
 
-София может играть в игры и стримить процесс:
+Если включён в конфиге (`GAME_MODE_ENABLED = True`), София может:
 
-1. **Видит экран** через `dxcam` (60 FPS) + Qwen3-VL-2B (описание сцены)
-2. **Детектирует объекты** через YOLOv8-nano (враги, предметы)
-3. **Прицеливается и уклоняется** через рефлексивный слой (< 100 мс)
-4. **Принимает стратегические решения** через мозг (qwen3:4b)
-5. **Управляет мышью и клавиатурой** через `pydirectinput`
-6. **Стримит** с оверлеем мыслей и эмоций через ffmpeg/OBS
+1. **Видеть экран** через `dxcam` (60 FPS) + Qwen3-VL-2B (описание сцены)
+2. **Детектировать объекты** через YOLOv8-nano (враги, предметы)
+3. **Прицеливаться и уклоняться** через рефлексивный слой (< 100 мс)
+4. **Принимать стратегические решения** через мозг (qwen3:4b)
+5. **Управлять мышью и клавиатурой** через `pydirectinput`
+6. **Стримить** с оверлеем мыслей и эмоций через ffmpeg/OBS
+
+Без включения в конфиге — модули не загружаются и не занимают VRAM.
 
 ### Профили игр
 
-Создавайте профили в `data/game_profiles/<игра>.json`:
-
-```json
-{
-  "name": "Minecraft",
-  "window_title": "Minecraft*",
-  "hp_region": [20, 20, 100, 20],
-  "key_bindings": {
-    "move_forward": "W",
-    "move_backward": "S",
-    "move_left": "A",
-    "move_right": "D",
-    "attack": "LMB",
-    "use": "RMB",
-    "jump": "SPACE",
-    "inventory": "E"
-  },
-  "reactive_rules": [
-    {"trigger": "enemy_near", "action": "aim", "priority": 10},
-    {"trigger": "hp_low", "action": "heal", "priority": 9}
-  ]
-}
-```
+Создавайте профили в `data/game_profiles/<игра>.json` (см. `data/game_profiles/example.json`).
 
 ## 📂 Документация
 - [Архитектура](docs/ARCHITECTURE.md) — поток данных, компоненты, среды, VRAM-бюджет
@@ -130,20 +117,21 @@ uvicorn main:app --host 0.0.0.0 --reload
 ## 🗂️ Структура
 - `core/` — когнитивный цикл, эмоции, навыки, CLIPS-правила
 - `memory/` — эпизодическая память, индексатор библиотеки
-- `modules/` — TTS, аватар, зрение, управление, стриминг
+- `modules/` — TTS, аватар, зрение (опц.), управление (опц.), стриминг (опц.)
 - `config/` — настройки (локальные в `settings_local.py`)
-- `scripts/` — утилиты, бенчмарки, проверки
+- `scripts/` — утилиты, бенчмарки
 
 ## 🎙️ Голос
 Для клонирования положите 5–8 WAV-файлов (10–30 сек, 22+ кГц, моно, тихая комната) в `data/voice_samples/`. Не коммитьте их в git.
 
-## 📺 Стриминг
+## 📺 Стриминг (опционально)
 Для трансляции на Twitch/YouTube:
 1. Установите ffmpeg (добавьте в PATH)
 2. Установите OBS Studio + obs-websocket
 3. Получите Stream Key на платформе
 4. Настройте в `config/settings_local.py`:
    ```python
+   STREAM_ENABLED = True
    STREAM_PLATFORM = "rtmp"
    STREAM_RTMP_URL = "rtmp://live.twitch.tv/app/YOUR_KEY"
    ```
