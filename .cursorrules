@@ -1,62 +1,63 @@
-# Cursor Rules for Project Sofia
+# Правила для Cursor / Windsurf
 
-## Project Context
-- **Name**: Project Sofia
-- **Stack**: Python 3.11+, FastAPI, WebSocket, Ollama (OpenAI-compatible API), Chroma, CLIPS, Coqui XTTS
-- **Dev Environment**: VDS (Linux, 8 CPU, **NO GPU**, **8GB RAM**, 75GB SSD)
-- **Target Environment**: Laptop (Windows 11, RTX 5050 8GB VRAM, 16GB RAM, Ryzen 7 260AI)
+## Проект
+Project Sofia — автономный ИИ-ассистент с когнитивной архитектурой.
+Репозиторий: https://github.com/kirin2461/ProjectSofia
 
-## ⚠️ Critical Constraints
-1. **Dev has NO GPU** — cannot run Ollama, LLM, or XTTS on VDS
-2. **Dev RAM**: 8GB — cannot run full stack
-3. **Target RAM**: 16GB total. Windows + background = ~5GB. Available for app: ~10GB.
-4. **Target VRAM**: 8GB. qwen3:4b = ~5.7GB. XTTS = ~2GB (load on demand). Leave 0.5GB buffer.
-5. **No model larger than 4b on target by default.** 8b only as optional "deep thinking" mode.
-6. **Lazy loading**: XTTS, FER, heavy models must load on first use, not at startup.
-7. **Context limit**: 32k max (num_ctx), prefer 8k-16k for speed.
-8. **75GB is SSD (disk), NOT RAM!**
+## Ограничения (критически важно)
+- **Целевое устройство**: ноутбук с RTX 5050 8 GB VRAM, 16 GB RAM, Windows 11
+- **Среда разработки**: VDS (CPU-only, 8 GB RAM, Linux, НЕТ GPU)
+- **75 GB — это SSD (диск)**, не RAM
 
-## Code Style
-- Type hints everywhere
-- Docstrings for public methods
-- Async/await for I/O (Ollama API, file operations)
-- No blocking calls in FastAPI handlers
-- Use `pathlib.Path` for paths
-- Log with `logging` module, not print
+## Что это значит для кода
+- Код должен работать на ноутбуке (GPU), но писаться на VDS (CPU-only)
+- Все тяжёлые модели (LLM, TTS, VLM, YOLO) — lazy loading
+- На VDS нельзя тестировать GPU-зависимое — только mock-объекты
+- Все зависимости должны иметь fallback на CPU
 
-## Memory Rules
-- Chroma DB paths: `data/memory_db/`, `data/vector_db/`
-- Library folder: `data/library/` (PDF, EPUB, TXT)
-- Voice samples: `data/voice_samples/` (WAV, 22kHz, mono)
-- Never commit `data/`, `venv/`, `__pycache__/`, `.env`
+## Архитектура
+- **SOAR**: цели, импассы, чанкинг (исследовательский)
+- **LLM Cascade**: qwen3:1.7b → qwen3:4b → критик
+- **CLIPS**: детерминированная безопасность
+- **Chroma**: память (эпизоды + книги)
+- **XTTS v2**: голос (~2 GB, lazy load)
+- **Qwen3-VL-2B**: зрение (~1.5 GB VRAM)
+- **YOLOv8-nano**: рефлексы (~0.1 GB VRAM)
+- **Game Control**: pydirectinput / pyautogui
+- **Streaming**: ffmpeg / OBS WebSocket
 
-## Architecture Patterns
-- **LLM Cascade**: extractor (1.7b) → brain (4b, stream) → critic (4b)
-- **Monologue**: internal reasoning, not shown to user
-- **Safety**: CLIPS rules filter input/output
-- **Emotions**: PAD model (Pleasure, Arousal, Dominance) affects temperature/tone
+## Стиль кода
+- Python 3.11+
+- Асинхронность: asyncio для LLM, threading для CV/захвата
+- Типизация: typing, dataclasses
+- Логирование: logging, не print
+- Обработка ошибок: try/except с логированием
+- Fallback'ы: если GPU недоступен — CPU, если библиотека не установлена — mock
 
-## Testing (on VDS — CPU-only)
-- Syntax check: `python -m py_compile`
-- Import check: `python -c "from module import Class"`
-- Unit tests with mocks (no LLM calls)
-- NO integration tests with Ollama (no GPU)
-- NO benchmark tests (requires GPU)
-- Monitor RAM: `free -h`
+## Модули
+- `core/` — когнитивный цикл, эмоции, SOAR, CLIPS, безопасность
+- `memory/` — Chroma, эпизоды, библиотека, watcher
+- `modules/` — TTS, зрение, управление, стриминг
+- `config/` — настройки, profiles
+- `scripts/` — утилиты, бенчмарки
 
-## Git
-- Commit in Russian or English consistently
-- One commit = one logical change
-- Push to `main` branch
+## Запреты
+- Не хардкодить пути (использовать pathlib)
+- Не коммитить веса моделей, голосовые образцы, данные
+- Не использовать облачные API (только локальные модели)
+- Не запускать LLM/TTS/Vision тесты на VDS (нет GPU)
 
-## Prohibited on VDS
-- Running Ollama (no GPU, useless on CPU)
-- Testing LLM inference speed
-- Testing XTTS (requires CUDA)
-- Running full backend stack (8GB RAM insufficient)
-- Running benchmark_target.py (requires GPU)
-- Loading multiple large models simultaneously in VRAM
-- Writing models/data to git
-- Hardcoding paths (use config/settings.py)
-- Blocking the event loop
-- Assuming 75GB RAM (this is SSD, not RAM!)
+## VRAM-бюджет (8 GB)
+```
+qwen3:4b       ~5.7 GB  (постоянно)
+Qwen3-VL-2B    ~1.5 GB  (постоянно, в режиме игры)
+YOLOv8-nano    ~0.1 GB  (постоянно)
+XTTS v2        ~2.0 GB  (только по требованию, выгружать в игре)
+```
+
+## Задержки
+- Захват экрана: < 20 мс (dxcam)
+- YOLO-детекция: 5-15 мс
+- VLM-описание: 200-500 мс
+- LLM-монолог: 1-3 сек
+- Действие (мышь): 5-10 мс

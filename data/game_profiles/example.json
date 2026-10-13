@@ -1,0 +1,91 @@
+{
+  "name": "Example Game",
+  "window_title": "ExampleGame*",
+  "description": "Пример профиля игры для Софии. Скопируйте и настройте под свою игру.",
+  "hp_region": {
+    "x": 20,
+    "y": 20,
+    "width": 200,
+    "height": 20,
+    "comment": "Область здоровья на экране (для OCR). Координаты в пикселях от левого верхнего угла."
+  },
+  "mana_region": {
+    "x": 20,
+    "y": 45,
+    "width": 200,
+    "height": 20
+  },
+  "key_bindings": {
+    "move_forward": "W",
+    "move_backward": "S",
+    "move_left": "A",
+    "move_right": "D",
+    "jump": "SPACE",
+    "crouch": "C",
+    "sprint": "LSHIFT",
+    "attack": "LMB",
+    "secondary_attack": "RMB",
+    "interact": "E",
+    "inventory": "TAB",
+    "map": "M",
+    "heal": "Q",
+    "skill_1": "1",
+    "skill_2": "2",
+    "skill_3": "3",
+    "skill_4": "4"
+  },
+  "reactive_rules": [
+    {
+      "trigger": "enemy_near",
+      "action": "aim",
+      "priority": 10,
+      "condition": "distance < 200",
+      "comment": "Враг близко → прицелиться"
+    },
+    {
+      "trigger": "enemy_near",
+      "action": "attack",
+      "priority": 9,
+      "condition": "aimed == true",
+      "cooldown": 0.5,
+      "comment": "Прицелились → атаковать (не чаще 0.5 сек)"
+    },
+    {
+      "trigger": "hp_low",
+      "action": "heal",
+      "priority": 8,
+      "condition": "hp < 30",
+      "cooldown": 5.0,
+      "comment": "HP < 30% → использовать хил (не чаще 5 сек)"
+    },
+    {
+      "trigger": "projectile_near",
+      "action": "dodge",
+      "priority": 10,
+      "condition": "projectile_speed > 0",
+      "comment": "Снаряд летит → уклониться"
+    },
+    {
+      "trigger": "item_near",
+      "action": "interact",
+      "priority": 3,
+      "condition": "label == 'loot'",
+      "comment": "Лут рядом → подобрать"
+    }
+  ],
+  "cognitive_prompt": "Ты играешь в Example Game. Твоя цель — выжить и развиваться. Обращай внимание на здоровье и врагов. Если много врагов — отступи. Если мало HP — используй хил.",
+  "vision_settings": {
+    "fps": 60,
+    "cognitive_interval_ms": 500,
+    "detection_confidence": 0.5,
+    "track_classes": ["enemy", "boss", "loot", "chest", "door"]
+  },
+  "stream_settings": {
+    "resolution": [1920, 1080],
+    "fps": 30,
+    "bitrate": "4500k",
+    "overlay_show_thoughts": true,
+    "overlay_show_detections": true,
+    "overlay_show_stats": true
+  }
+}
