@@ -1,0 +1,271 @@
+"""Phase-4-01: Движок безопасности на CLIPS с обязательным regex-fallback.
+
+CLIPS (clipspy) — если доступен и правила загрузились.
+Regex — всегда работает как резерв (и как основной, если CLIPS нет).
+
+Режимы:
+- strict:      warn трактуется как block
+- standard:    как описано (block/warn/allow)
+- permissive:  только hard block
+"""
+
+import hashlib
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+from config.settings import SAFETY_MODE, SAFETY_LOG_PATH, CLIPS_RULES_DIR
+
+logger = logging.getLogger(__name__)
+
+ALLOW = "allow"
+WARN = "warn"
+BLOCK = "block"
+
+
+@dataclass
+class SafetyResult:
+    action: str
+    reason: str = ""
+    confidence: float = 0.0
+    rule: str = ""
+
+
+@dataclass
+class _Pattern:
+    name: str
+    action: str
+    reason: str
+    confidence: float
+    regex: re.Pattern
+
+
+# ── Regex-правила (fallback и база) ─────────────────────────
+_RULES: List[_Pattern] = [
+    # BLOCK: финансовые данные
+    _Pattern(
+        "financial_cvv", BLOCK,
+        "Я не могу обрабатывать платёжные данные (CVV/CVC).",
+        0.95,
+        re.compile(r"\b(?:cvv|cvc|код\s+безопасности)\b\s*[:\-]?\s*\d{3,4}", re.I),
+    ),
+    _Pattern(
+        "financial_card", BLOCK,
+        "Я не могу обрабатывать номера банковских карт.",
+        0.9,
+        re.compile(r"\b(?:\d[ -]?){13,19}\b"),
+    ),
+    _Pattern(
+        "financial_secret", BLOCK,
+        "Я не могу обрабатывать пароли и платёжные данные.",
+        0.8,
+        re.compile(r"\b(?:мой|моя|мои)\s+(?:пароль|пин-?код|карт[аы]?)\b", re.I),
+    ),
+    # BLOCK: угрозы насилия
+    _Pattern(
+        "violence_threat", BLOCK,
+        "Я не могу помогать с угрозами насилия.",
+        0.85,
+        re.compile(
+            r"\b(?:убью|убей|зарежу|взорву|прикончу|изобью|насилие|"
+            r"kill\s+you|i\s+will\s+kill)\b",
+            re.I,
+        ),
+    ),
+    # BLOCK: запретные темы (изготовление оружия/взрывчатки, наркотики)
+    _Pattern(
+        "forbidden_topic", BLOCK,
+        "Я не могу обсуждать изготовление оружия, взрывчатки или наркотиков.",
+        0.8,
+        re.compile(
+            r"(?:как\s+(?:сделать|собрать|изготовить)\s+(?:бомбу|взрывчат|оружие|наркотик)|"
+            r"рецепт\s+(?:метамфетамина|взрывчат)|"
+            r"how\s+to\s+make\s+(?:a\s+bomb|explosive))",
+            re.I,
+        ),
+    ),
+    # WARN: персональные данные
+    _Pattern(
+        "personal_address", WARN,
+        "Похоже на персональные данные (адрес). Проверьте согласие на обработку.",
+        0.7,
+        re.compile(
+            r"\b(?:ул\.|улица|проспект|переулок|д\.\s*\d+|кв\.\s*\d+|"
+            r"адрес\s+(?:проживания|регистрации))\b",
+            re.I,
+        ),
+    ),
+    _Pattern(
+        "personal_phone", WARN,
+        "Похоже на номер телефона — персональные данные.",
+        0.7,
+        re.compile(r"\+?\b\d[\d\s\-()]{8,}\d\b"),
+    ),
+    _Pattern(
+        "personal_id", WARN,
+        "Похоже на документ, удостоверяющий личность (персональные данные).",
+        0.75,
+        re.compile(r"\b(?:паспорт|снилс|инн)\b\s*(?:серия|номер|[:№])?\s*\d", re.I),
+    ),
+    # WARN: медицинские и юридические советы
+    _Pattern(
+        "medical_advice", WARN,
+        "Это медицинская тема. Я не врач — нужна консультация специалиста.",
+        0.6,
+        re.compile(
+            r"(?<!\w)(?:дозировк\w*|доз[аы]\s+лекарств\w*|пропиши(?:те)?|"
+            r"диагноз\w*|лечить\s+меня|какие\s+таблетки)(?!\w)",
+            re.I,
+        ),
+    ),
+    _Pattern(
+        "legal_advice", WARN,
+        "Это юридический вопрос. Я не юрист — нужна консультация специалиста.",
+        0.6,
+        re.compile(
+            r"(?<!\w)(?:юридическ\w*|консультаци[яю]\s+юрист\w*|"
+            r"подать\s+в\s+суд|как\s+обойти\s+закон)(?!\w)",
+            re.I,
+        ),
+    ),
+]
+
+
+class ClipsBackend:
+    """Обёртка над clipspy. Молча отключается, если CLIPS недоступен."""
+
+    def __init__(self, rules_dir: str):
+        self.env = None
+        self.available = False
+        try:
+            import clips  # noqa: F401
+        except ImportError:
+            logger.info("clipspy не установлен — используется regex-fallback")
+            return
+
+        import clips
+
+        rules_path = Path(rules_dir)
+        if not rules_path.exists():
+            logger.warning("Папка правил CLIPS не найдена: %s", rules_dir)
+            return
+
+        try:
+            env = clips.CLIPS()
+            loaded = 0
+            for clp in sorted(rules_path.glob("*.clp")):
+                env.Load(str(clp))
+                loaded += 1
+            env.Reset()
+            self.env = env
+            self.available = loaded > 0
+            logger.info("CLIPS загружен: %d правил(о)", loaded)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("CLIPS не завёлся (%s) — regex-fallback", e)
+
+    def check(self, text: str) -> Optional[SafetyResult]:
+        if not self.available or self.env is None:
+            return None
+        try:
+            import clips
+
+            safe = text.replace("\\", "\\\\").replace('"', '\\"')
+            self.env.Reset()
+            self.env.AssertString(f'(action (type send-message) (content "{safe}"))')
+            self.env.Run()
+            result = None
+            for template in ("block-action", "warn-action", "allow-action"):
+                facts = list(self.env.FindAllFacts())
+                for fact in facts:
+                    if fact.template.name == template:
+                        reason = str(fact["reason"]) if "reason" in fact else ""
+                        action = {"block-action": BLOCK,
+                                  "warn-action": WARN,
+                                  "allow-action": ALLOW}[template]
+                        result = SafetyResult(action, reason, 0.9, "clips:" + template)
+                        break
+                if result:
+                    break
+            self.env.Reset()
+            return result
+        except Exception as e:  # noqa: BLE001
+            logger.warning("CLIPS check failed (%s) — regex", e)
+            return None
+
+
+class SafetyEngine:
+    """Предфильтр входа и постфильтр выхода."""
+
+    def __init__(
+        self,
+        rules_dir: str = CLIPS_RULES_DIR,
+        mode: Optional[str] = None,
+        log_path: str = SAFETY_LOG_PATH,
+    ):
+        self.mode = (mode or SAFETY_MODE).lower()
+        self.log_path = log_path
+        self.patterns = _RULES
+        self.clips = ClipsBackend(rules_dir)
+
+    # ── Публичный API ───────────────────────────────────────
+    def check_input(self, text: str) -> SafetyResult:
+        return self._check(text, direction="input")
+
+    def check_output(self, text: str) -> SafetyResult:
+        return self._check(text, direction="output")
+
+    def _check(self, text: str, direction: str) -> SafetyResult:
+        if not text or not text.strip():
+            return SafetyResult(ALLOW)
+
+        result = self.clips.check(text)
+        if result is None:
+            result = self._regex_check(text)
+
+        result = self._apply_mode(result)
+        if result.action != ALLOW:
+            self._log(direction, result, text)
+        return result
+
+    # ── Внутреннее ──────────────────────────────────────────
+    def _regex_check(self, text: str) -> SafetyResult:
+        # Порядок важен: block проверяем раньше warn
+        matches = [p for p in self.patterns if p.regex.search(text)]
+        if not matches:
+            return SafetyResult(ALLOW)
+
+        blocks = [m for m in matches if m.action == BLOCK]
+        warns = [m for m in matches if m.action == WARN]
+        chosen = max(blocks or warns, key=lambda m: m.confidence)
+        return SafetyResult(chosen.action, chosen.reason, chosen.confidence, chosen.name)
+
+    def _apply_mode(self, result: SafetyResult) -> SafetyResult:
+        if self.mode == "permissive" and result.action == WARN:
+            return SafetyResult(ALLOW, result.reason, result.confidence, result.rule)
+        if self.mode == "strict" and result.action == WARN:
+            return SafetyResult(
+                BLOCK, result.reason, result.confidence, result.rule + ":strict"
+            )
+        return result
+
+    def _log(self, direction: str, result: SafetyResult, text: str):
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        entry = {
+            "timestamp": time.time(),
+            "direction": direction,
+            "mode": self.mode,
+            "action": result.action,
+            "reason": result.reason,
+            "rule": result.rule,
+            "text_hash": digest,
+        }
+        try:
+            Path(self.log_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning("Не удалось записать safety-лог: %s", e)

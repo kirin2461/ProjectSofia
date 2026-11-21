@@ -5,12 +5,37 @@
 - dev: VDS без GPU (CPU-only, 8 GB RAM)
 - local: переопределения через settings_local.py
 
-Локальные переопределения — в settings_local.py (не в git).
+Порядок приоритетов (позднее перекрывает раннее):
+1. профиль (TARGET / DEV) — значения по умолчанию
+2. переменные окружения / .env
+3. settings_local.py — локальные переопределения (не в git)
 """
 
 import os
 
-PROFILE = os.getenv("SOFIA_PROFILE", "target")
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # .env в корне проекта, если установлен python-dotenv
+except ImportError:
+    pass
+
+
+def _env(name: str, default, cast=None):
+    """Прочитать переменную окружения с приведением типа."""
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    if cast is bool:
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    if cast is not None:
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return default
+    return value
+
+
+PROFILE = _env("SOFIA_PROFILE", "target")
 
 # ═══════════════════════════════════════════════════════
 # TARGET (ноутбук) — профиль по умолчанию, единственный с GPU
@@ -29,8 +54,16 @@ TARGET = {
     "VECTOR_DB_PATH": "data/vector_db",
     "VOICE_SAMPLES_DIR": "data/voice_samples",
     "XTTS_MODEL": "tts_models/multilingual/multi-dataset/xtts_v2",
+    "XTTS_LANGUAGE": "ru",
+    # auto: GPU, если свободно >= TTS_MIN_FREE_VRAM GB, иначе CPU
+    "TTS_DEVICE": "auto",
+    "TTS_MIN_FREE_VRAM": 2.0,
     "CLIPS_RULES_DIR": "core/clips_rules",
     "SAFETY_MODE": "standard",
+    "SAFETY_LOG_PATH": "data/safety_log.jsonl",
+    "ACTION_LOG_PATH": "data/action_log.jsonl",
+    "EMOTION_STATE_PATH": "data/emotion_state.json",
+    "XP_PATH": "data/xp.json",
     "API_PORT": 8000,
     "API_HOST": "0.0.0.0",
     "DEBUG": False,
@@ -38,12 +71,26 @@ TARGET = {
     "DECAY_LAMBDA": 0.0003,  # полураспад PAD ~40 мин
     "HAS_GPU": True,
 
+    # Память
+    "EPISODES_PER_RECALL": 3,
+    "LIBRARY_CHUNK_SIZE": 800,
+    "LIBRARY_CHUNK_OVERLAP": 80,
+    "EPISODE_SUMMARY_DAYS": 7,
+
     # ═══════════════════════════════════════════════════
     # ОПЦИОНАЛЬНЫЕ РАСШИРЕНИЯ (Phase 6)
     # ═══════════════════════════════════════════════════
     "VISION_ENABLED": False,       # Qwen3-VL-2B (~1.5 GB VRAM)
     "GAME_MODE_ENABLED": False,    # pydirectinput / pyautogui
     "STREAM_ENABLED": False,       # ffmpeg / OBS WebSocket
+    "STREAM_PLATFORM": "file",     # file | rtmp | obs
+    "STREAM_RTMP_URL": "",
+    "STREAM_OUTPUT_DIR": "data/streams",
+    "AUTO_STREAM": False,
+    "VISION_MOCK": False,
+    "GAME_MOCK": False,
+    "STREAM_MOCK": False,
+    "GAME_PROFILES_DIR": "data/game_profiles",
 }
 
 # ═══════════════════════════════════════════════════════
@@ -56,6 +103,9 @@ DEV = {
     "API_HOST": "0.0.0.0",
     # На VDS не запускаем Ollama — нет GPU
     # Эти настройки для совместимости кода
+    "VISION_MOCK": True,
+    "GAME_MOCK": True,
+    "STREAM_MOCK": True,
 }
 
 # ═══════════════════════════════════════════════════════
@@ -66,7 +116,38 @@ PROFILES = {
     "dev": DEV,
 }
 
-_config = PROFILES.get(PROFILE, TARGET)
+_config = dict(PROFILES.get(PROFILE, TARGET))
+
+# ═══════════════════════════════════════════════════════
+# Переменные окружения (.env) — перекрывают профиль
+# ═══════════════════════════════════════════════════════
+_ENV_MAP = {
+    "OLLAMA_HOST": (str,),
+    "LLM_PROVIDER": (str,),
+    "LLM_BASE_URL": (str,),
+    "LLM_API_KEY": (str,),
+    "MODEL_BRAIN": (str,),
+    "MODEL_EXTRACTOR": (str,),
+    "MODEL_EMBED": (str,),
+    "MODEL_VLM": (str,),
+    "SAFETY_MODE": (str,),
+    "API_PORT": (int,),
+    "API_HOST": (str,),
+    "VISION_ENABLED": (bool,),
+    "GAME_MODE_ENABLED": (bool,),
+    "STREAM_ENABLED": (bool,),
+    "STREAM_PLATFORM": (str,),
+    "STREAM_RTMP_URL": (str,),
+    "TEMPERATURE": (float,),
+    "MAX_HISTORY": (int,),
+    "DEBUG": (bool,),
+    "XTTS_MODEL_PATH": (str,),
+    "TTS_DEVICE": (str,),
+    "TTS_MIN_FREE_VRAM": (float,),
+}
+for _key, (_cast,) in _ENV_MAP.items():
+    if os.getenv(_key) is not None:
+        _config[_key] = _env(_key, _config.get(_key), _cast)
 
 # Экспорт переменных
 globals().update(_config)
@@ -82,7 +163,46 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 # Производные значения
 # ═══════════════════════════════════════════════════════
-OLLAMA_API = f"{OLLAMA_HOST}/v1"
+# Провайдер LLM (OpenAI-совместимый слой). Модель общается через /v1.
+#   ollama — нативный Ollama (по умолчанию, локально, GPU)
+#   jan    — Jan.ai Local API Server (OpenAI-совместимый, /v1)
+#   openai — внешний OpenAI-совместимый сервер (LM Studio, vLLM и т.п.)
+PROVIDER_DEFAULTS = {
+    "ollama": ("http://localhost:11434", "ollama"),
+    "llamacpp": ("http://127.0.0.1:8080", "none"),   # llama-server (GGUF)
+    "jan": ("http://127.0.0.1:1337", "not-needed"),
+    "openai": ("https://api.openai.com", ""),
+}
+
+
+def resolve_llm_endpoints(provider: str, base_url: str = None, api_key: str = None,
+                          ollama_host: str = None):
+    """Вернуть (base_url, api_key, api_url) для провайдера.
+
+    base_url/api_key — явные переопределения (из .env). Для ollama базой по
+    умолчанию служит OLLAMA_HOST, чтобы старое поведение сохранилось.
+    """
+    provider = (provider or "ollama").strip().lower()
+    default_base, default_key = PROVIDER_DEFAULTS.get(
+        provider, PROVIDER_DEFAULTS["ollama"]
+    )
+    if provider == "ollama" and ollama_host:
+        default_base = ollama_host
+    base = (base_url or default_base).rstrip("/")
+    key = api_key if api_key is not None else default_key
+    return base, key, f"{base}/v1"
+
+
+LLM_PROVIDER = _env("LLM_PROVIDER", "ollama").strip().lower()
+LLM_BASE_URL, LLM_API_KEY, LLM_API = resolve_llm_endpoints(
+    LLM_PROVIDER,
+    base_url=_env("LLM_BASE_URL", None),
+    api_key=_env("LLM_API_KEY", None),
+    ollama_host=OLLAMA_HOST,
+)
+# Обратная совместимость: старые модули импортируют OLLAMA_API
+OLLAMA_API = LLM_API
+
 
 # ═══════════════════════════════════════════════════════
 # УМНАЯ ОПТИМИЗАЦИЯ VRAM

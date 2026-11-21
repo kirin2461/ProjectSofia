@@ -1,0 +1,4 @@
+# Phase 6 — опциональное расширение: управление (руки Софии)
+# Устанавливать только если GAME_MODE_ENABLED = True
+pyautogui
+pydirectinput ; sys_platform == "win32"

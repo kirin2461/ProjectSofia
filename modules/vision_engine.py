@@ -48,7 +48,8 @@ class MockScreenCapture:
         self.fps = fps
         self.region = region or (0, 0, 1920, 1080)
         self._running = False
-        self._frame = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
+        w, h = self.region[2], self.region[3]
+        self._frame = np.random.randint(0, 255, (h, w, 3), dtype=np.uint8)
         self._thread: Optional[threading.Thread] = None
 
     def start(self):
@@ -64,9 +65,10 @@ class MockScreenCapture:
         logger.info("[MockScreenCapture] Остановлен")
 
     def _loop(self):
+        w, h = self.region[2], self.region[3]
         while self._running:
             # Меняем кадр слегка, чтобы имитировать движение
-            self._frame = np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8)
+            self._frame = np.random.randint(0, 255, (h, w, 3), dtype=np.uint8)
             time.sleep(1.0 / self.fps)
 
     def get_frame(self) -> np.ndarray:
@@ -114,14 +116,13 @@ class ScreenCapture:
     def _loop(self):
         while self._running:
             try:
-                if hasattr(self._capture, 'grab'):
-                    # dxcam
-                    frame = self._capture.grab()
-                elif hasattr(self._capture, 'grab'):
-                    # mss
+                # dxcam возвращает кадр напрямую; mss — через grab(monitor)
+                if hasattr(self._capture, "grab") and not hasattr(self._capture, "monitors"):
+                    frame = self._capture.grab()  # dxcam
+                elif hasattr(self._capture, "monitors"):
+                    import mss  # noqa: F401
                     monitor = self.region or self._capture.monitors[1]
                     sct_img = self._capture.grab(monitor)
-                    import numpy as np
                     frame = np.array(sct_img)
                 else:
                     continue
@@ -178,6 +179,7 @@ class ReactiveVision:
         """Определение движения через разницу кадров."""
         if prev_frame is None or curr_frame is None:
             return np.zeros_like(curr_frame)
+        import cv2
         gray_prev = np.mean(prev_frame, axis=2).astype(np.uint8)
         gray_curr = np.mean(curr_frame, axis=2).astype(np.uint8)
         diff = cv2.absdiff(gray_prev, gray_curr)
@@ -205,6 +207,7 @@ class CognitiveVision:
             return "[VLM не загружен]"
 
         # Кодируем кадр в base64
+        import cv2
         _, buffer = cv2.imencode(".jpg", frame)
         img_b64 = base64.b64encode(buffer).decode("utf-8")
 

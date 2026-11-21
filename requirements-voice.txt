@@ -1,0 +1,27 @@
+# Голос: XTTS v2 (coqui-tts). Опционально — Phase 1.
+#
+# 1) torch для GPU (RTX 50xx — только CUDA 12.8+):
+#    pip install --index-url https://download.pytorch.org/whl/cu128 "torch==2.11.0+cu128" "torchaudio==2.11.0+cu128"
+#    (для CPU: pip install torch torchaudio)
+#
+# 2) сам движок:
+#    pip install -r requirements-voice.txt
+#
+# 3) при первом synthesize скачается модель XTTS v2 (~1.9 GB) в кэш coqui.
+#    Образцы голоса (5–8 wav, 6–15 с каждый) — в data/voice_samples/*.wav
+#    Без образцов используется встроенный диктор.
+#
+# Лицензия: XTTS v2 — некоммерческая CPML. Движок сам выставляет
+# COQUI_TOS_AGREED=1, чтобы модель грузилась без интерактивного вопроса.
+# Коммерческое использование требует лицензии Coqui (licensing@coqui.ai).
+
+coqui-tts==0.28.0
+# transformers 5.x ломает инференс GPT в XTTS ('NoneType' ... get_seq_length) —
+# держим ветку 4.57, на которой XTTS v2 работает.
+transformers==4.57.6
+# Начиная с torch 2.9 coqui требует torchcodec для аудио-IO (жёсткий импорт TTS.api).
+# Версия torchcodec подбирается под torch: для torch 2.11 — 0.9.1.
+torchcodec==0.9.1
+torchcodec==0.9.1
+six>=1.16
+soundfile>=0.12.1

@@ -1,0 +1,7 @@
+# Phase 6 — опциональное расширение: зрение (глаза Софии)
+# Устанавливать только если VISION_ENABLED = True
+numpy
+opencv-python
+ultralytics
+dxcam ; sys_platform == "win32"
+mss

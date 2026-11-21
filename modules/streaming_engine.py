@@ -115,9 +115,12 @@ class MockStreamer:
     def send_frame(self, frame: np.ndarray):
         if not self._active:
             return
-        import cv2
         path = os.path.join(self.output_dir, f"frame_{self._frame_count:06d}.png")
-        cv2.imwrite(path, frame)
+        try:
+            import cv2
+            cv2.imwrite(path, frame)
+        except ImportError:
+            np.save(path + ".npy", frame)
         self._frame_count += 1
         if self._frame_count % 30 == 0:
             logger.info(f"[MockStreamer] Сохранено {self._frame_count} кадров")
@@ -131,12 +134,14 @@ class FileRecorder:
 
     def __init__(self, output_dir: str = "data/streams"):
         self.output_dir = output_dir
-        self._writer: Optional[cv2.VideoWriter] = None
+        self._writer = None
         self._active = False
+        self._size = (1920, 1080)
         os.makedirs(output_dir, exist_ok=True)
 
     def start_stream(self, width: int = 1920, height: int = 1080, fps: int = 30):
         import cv2
+        self._size = (width, height)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         path = os.path.join(self.output_dir, f"stream_{timestamp}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -153,10 +158,10 @@ class FileRecorder:
 
     def send_frame(self, frame: np.ndarray):
         if self._active and self._writer:
-            # Убедимся, что размер совпадает
-            if frame.shape[1] != 1920 or frame.shape[0] != 1080:
-                import cv2
-                frame = cv2.resize(frame, (1920, 1080))
+            import cv2
+            # Приводим размер к размеру writer'а
+            if frame.shape[1] != self._size[0] or frame.shape[0] != self._size[1]:
+                frame = cv2.resize(frame, self._size)
             self._writer.write(frame)
 
     def is_active(self) -> bool:

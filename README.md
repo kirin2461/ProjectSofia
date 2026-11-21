@@ -75,25 +75,39 @@ python -m py_compile core/*.py memory/*.py modules/*.py main.py
 ```
 
 ### На ноутбуке (target — полный запуск)
-```bash
-# 1. Ollama (Windows): https://ollama.com/download/windows
-# 2. В PowerShell:
-ollama pull qwen3:4b qwen3:1.7b bge-m3
 
-# 3. Опционально (для зрения):
-ollama pull qwen3-vl:2b
+Вариант A — **llama.cpp / llama-server** (локальные GGUF, без Ollama):
+```powershell
+# 1. Скачать сборку llama.cpp (CUDA) один раз:
+#    https://github.com/ggml-org/llama.cpp/releases
+#    -> llama-bXXXXX-bin-win-cuda-12.4-x64.zip + cudart-llama-bin-win-cuda-12.4-x64.zip
+#    распаковать оба в %LOCALAPPDATA%\llama.cpp\bXXXXX
 
-# 4. Зависимости
-pip install -r requirements.txt
+# 2. Запустить сервер (модель и число слоёв — параметрами):
+powershell -ExecutionPolicy Bypass -File scripts\start_llm_server.ps1 `
+    -Model "C:\путь\к\model.gguf" -Alias my-model -GpuLayers 29
 
-# 5. Проверка
+# 3. Прописать в .env:
+#    LLM_PROVIDER=llamacpp
+#    MODEL_BRAIN=my-model
+#    MODEL_EXTRACTOR=my-model
+
+# 4. Проверка и запуск
 python scripts/check_ollama.py
-python scripts/benchmark_target.py
+uvicorn main:app --host 127.0.0.1 --reload
+```
 
-# 6. Запуск базового ассистента
+Вариант B — **Ollama** (Windows): https://ollama.com/download/windows
+```bash
+ollama pull qwen3:4b qwen3:1.7b bge-m3          # + qwen3-vl:2b для зрения
+pip install -r requirements.txt
+python scripts/check_ollama.py
 uvicorn main:app --host 0.0.0.0 --reload
+# в .env: LLM_PROVIDER=ollama
+```
 
-# 7. Включить зрение (VLM станет экстрактором, 1.7b не нужен):
+```bash
+# Включить зрение (VLM станет экстрактором, 1.7b не нужен):
 # В config/settings_local.py:
 #   VISION_ENABLED = True
 #   GAME_MODE_ENABLED = True
@@ -133,8 +147,31 @@ uvicorn main:app --host 0.0.0.0 --reload
 - `config/` — настройки (локальные в `settings_local.py`)
 - `scripts/` — утилиты, бенчмарки
 
-## 🎙️ Голос
-Для клонирования положите 5–8 WAV-файлов (10–30 сек, 22+ кГц, моно, тихая комната) в `data/voice_samples/`. Не коммитьте их в git.
+## 🎙️ Голос (XTTS v2)
+Установка (опционально, Phase 1):
+```powershell
+# 1. torch под GPU RTX 50xx (Blackwell — только CUDA 12.8+):
+pip install --index-url https://download.pytorch.org/whl/cu128 `
+    "torch==2.11.0+cu128" "torchaudio==2.11.0+cu128"
+# 2. движок голоса:
+pip install -r requirements-voice.txt
+# 3. проверка (скачает модель ~1.9 GB при первом запуске):
+python scripts/test_voice.py
+```
+Для клонирования голоса положите 5–8 WAV-файлов (10–30 сек, 22+ кГц, моно, тихая
+комната) в `data/voice_samples/`. Без образцов используется встроенный диктор.
+Не коммитьте образцы в git.
+
+Движок сам выбирает устройство: GPU, если свободно ≥ `TTS_MIN_FREE_VRAM` GB
+(по умолчанию 2 ГБ), иначе CPU. На 8-ГБ карте вместе с 9B-LLM свободной VRAM
+не остаётся, поэтому XTTS работает на CPU: real-time factor ≈ 3.5 (≈3.5 с
+синтеза на 1 с речи). Чтобы ответ не молчал десятки секунд, София озвучивает
+его по предложениям — первый аудио-фрагмент уходит почти сразу, браузер
+проигрывает их по очереди.
+
+Переопределения (`.env` или `settings_local.py`): `TTS_DEVICE` (`auto`/`cpu`/
+`cuda`), `TTS_MIN_FREE_VRAM` (порог в ГБ). XTTS v2 — некоммерческая лицензия
+CPML; движок выставляет `COQUI_TOS_AGREED=1` автоматически.
 
 ## 📺 Стриминг (опционально)
 Для трансляции на Twitch/YouTube:

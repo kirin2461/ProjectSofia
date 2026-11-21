@@ -8,3 +8,7 @@ __pycache__/
 .env
 vector_db/
 chroma_db/
+.venv/
+venv/
+.pytest_cache/
+*.log

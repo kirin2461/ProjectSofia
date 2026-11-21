@@ -1,0 +1,6 @@
+# Phase 6 — опциональное расширение: стриминг
+# Устанавливать только если STREAM_ENABLED = True
+# Также нужен системный ffmpeg в PATH и (для OBS) obs-websocket-py
+numpy
+opencv-python
+obs-websocket-py

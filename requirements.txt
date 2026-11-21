@@ -12,3 +12,6 @@ coqui-tts
 aiofiles
 python-multipart
 numpy
+requests
+python-dotenv
+psutil
