@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 import wave
 from pathlib import Path
 from typing import List, Optional
@@ -30,6 +31,38 @@ from config.settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _soundfile_load_audio(audiopath, sampling_rate):
+    """Замена TTS.tts.models.xtts.load_audio без torchaudio.load.
+
+    torchaudio ≥ 2.9 читает файлы только через torchcodec, а тому нужен
+    установленный FFmpeg. Без FFmpeg клонирование голоса падало с
+    «Could not load libtorchcodec». WAV-образцы спокойно читает soundfile.
+    """
+    import soundfile as sf
+    import torch
+    import torchaudio
+
+    data, lsr = sf.read(str(audiopath), dtype="float32", always_2d=True)
+    audio = torch.from_numpy(data.T.copy())  # (каналы, сэмплы)
+    if audio.size(0) != 1:
+        audio = torch.mean(audio, dim=0, keepdim=True)
+    if lsr != sampling_rate:
+        audio = torchaudio.functional.resample(audio, lsr, sampling_rate)
+    audio.clip_(-1, 1)
+    return audio
+
+
+def _patch_xtts_audio_loader() -> bool:
+    """Подменить загрузчик образцов в XTTS. True — если подмена удалась."""
+    try:
+        from TTS.tts.models import xtts
+    except Exception as e:  # noqa: BLE001
+        logger.debug("XTTS недоступна для патча загрузчика: %s", e)
+        return False
+    xtts.load_audio = _soundfile_load_audio
+    return True
 
 
 def _free_vram_gb() -> Optional[float]:
@@ -102,6 +135,10 @@ class TTSEngine:
         self.language = language
         self._tts = None
         self._load_error: Optional[str] = None
+        # XTTS не потокобезопасен: tts_to_file пишет в общий граф модели,
+        # а ленивая загрузка при гонке грузит модель дважды (в exe озвучка
+        # идёт фоновой задачей на каждую реплику). Один синтез за раз.
+        self._lock = threading.RLock()
 
     # ── Инициализация ───────────────────────────────────────
     @property
@@ -115,6 +152,7 @@ class TTSEngine:
         try:
             from TTS.api import TTS
 
+            _patch_xtts_audio_loader()
             logger.info("Загрузка XTTS v2 на %s (это займёт время)...", self.device)
             try:
                 self._tts = TTS(model_name=self.model_name).to(self.device)
@@ -150,7 +188,10 @@ class TTSEngine:
         text = (text or "").strip()
         if not text:
             return None
+        with self._lock:
+            return self._synthesize_locked(text, language)
 
+    def _synthesize_locked(self, text: str, language: Optional[str]) -> Optional[bytes]:
         self._load()
         if self._tts is None:
             return None
@@ -222,7 +263,8 @@ class TTSEngine:
 
     def unload(self):
         """Выгрузить модель (для игрового режима — освободить VRAM)."""
-        self._tts = None
+        with self._lock:
+            self._tts = None
         try:
             import torch
 

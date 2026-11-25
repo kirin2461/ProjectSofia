@@ -3,152 +3,717 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>София — SOAR + LLM</title>
+<title>София</title>
 <style>
   :root {
-    --bg: #0a0e1a;
-    --panel: #121a2e;
-    --accent: #38e8ff;
-    --accent-dim: #1c6b7a;
-    --user: #1e3a5f;
-    --sofia: #16233d;
-    --text: #e6edf7;
-    --muted: #7d8aa3;
+    --bg: #070a14;
+    --glass: rgba(255, 255, 255, 0.04);
+    --glass-2: rgba(255, 255, 255, 0.07);
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #e8eef9;
+    --muted: #8a96b0;
+    --a: #38e8ff;
+    --b: #7b5cff;
+    --user-1: #2a3f6e;
+    --user-2: #213157;
+    --radius: 18px;
+    --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --mono: "Cascadia Code", Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
-    background: var(--bg); color: var(--text);
-    height: 100vh; display: flex; flex-direction: column;
-    transition: background 0.8s ease;
+    margin: 0; font-family: var(--font); color: var(--text);
+    background: var(--bg); overflow: hidden;
+    display: grid; grid-template-columns: 260px 1fr;
   }
+  body.collapsed { grid-template-columns: 0 1fr; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--a); outline-offset: 2px; }
+
+  /* ── Сияние на фоне ───────────────────────────── */
+  .aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+  .aurora i {
+    position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%;
+    filter: blur(110px); opacity: .22;
+    transition: background 1.2s ease;
+    animation: drift 26s ease-in-out infinite alternate;
+  }
+  .aurora i:nth-child(1) { background: var(--a); top: -25vmax; left: -10vmax; }
+  .aurora i:nth-child(2) { background: var(--b); bottom: -30vmax; right: -15vmax; animation-delay: -13s; }
+  @keyframes drift { to { transform: translate(8vmax, 6vmax) scale(1.1); } }
+
+  /* ── Боковая панель ───────────────────────────── */
+  aside {
+    overflow: hidden auto; border-right: 1px solid var(--line);
+    background: rgba(7, 10, 20, .55); backdrop-filter: blur(18px);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 28px 20px 20px; gap: 6px; min-width: 0;
+  }
+  body.collapsed aside { padding: 0; border: none; }
+  .name { font-size: 22px; font-weight: 600; letter-spacing: 6px; margin-top: 14px; }
+  .mood {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 13px; color: var(--text); padding: 4px 13px 4px 11px; border-radius: 99px;
+    background: color-mix(in srgb, var(--a) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--a) 32%, transparent);
+    transition: background 1.2s, border-color 1.2s;
+  }
+  .mood::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: var(--a); box-shadow: 0 0 10px var(--a);
+    transition: background 1.2s, box-shadow 1.2s;
+  }
+  .section { width: 100%; margin-top: 22px; }
+  .section h3 {
+    font-size: 11px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  .pad { display: grid; grid-template-columns: 1fr; gap: 9px; }
+  .pad label { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .bar { position: relative; height: 6px; border-radius: 3px; background: rgba(255,255,255,.055); margin-top: 5px; }
+  .bar::before {
+    content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px;
+    background: rgba(255,255,255,.2); z-index: 2;
+  }
+  .bar b {
+    position: absolute; top: 0; bottom: 0; border-radius: 3px;
+    background: linear-gradient(90deg, var(--b), var(--a));
+    box-shadow: 0 0 10px -1px var(--a);
+    transition: left .8s cubic-bezier(.22,1,.36,1), width .8s cubic-bezier(.22,1,.36,1),
+                background 1.2s, box-shadow 1.2s;
+  }
+  .facts { width: 100%; display: grid; gap: 8px; font-size: 13px; }
+  .facts div { display: flex; justify-content: space-between; gap: 10px; }
+  .facts span:first-child { color: var(--muted); }
+  .facts span:last-child { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Браузер и автономный режим ───────────────── */
+  .drawer {
+    position: fixed; top: 72px; right: 18px; z-index: 30;
+    width: min(390px, calc(100vw - 36px)); max-height: calc(100vh - 100px);
+    padding: 16px 16px 14px; overflow: hidden;
+    border-radius: var(--radius); border: 1px solid var(--line);
+    background: rgba(10, 14, 26, .86); backdrop-filter: blur(22px);
+    box-shadow: 0 26px 60px -24px rgba(0, 0, 0, .85);
+    display: none;
+  }
+  .drawer.open { display: block; }
+  .drawer h3 {
+    margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .drawer .status { font-size: 12px; color: var(--muted); margin: 0 0 12px; word-break: break-all; }
+  .drawer .row { display: flex; gap: 8px; align-items: center; }
+  .drawer .row + .row { margin-top: 8px; }
+  .drawer input {
+    flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--text);
+    background: rgba(255, 255, 255, .05); border: 1px solid var(--line);
+    border-radius: 12px; padding: 9px 12px;
+  }
+  .drawer input::placeholder { color: var(--muted); }
+  .drawer .act {
+    font-size: 13px; padding: 9px 13px; border-radius: 12px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--a) 34%, transparent);
+    background: color-mix(in srgb, var(--a) 12%, transparent);
+    transition: background .2s, border-color .2s;
+    flex: none;
+  }
+  .drawer .act:hover { background: color-mix(in srgb, var(--a) 22%, transparent); }
+  .drawer .act.ghost { border-color: var(--line); background: rgba(255, 255, 255, .04); }
+  .drawer .confirm {
+    margin-top: 12px; padding: 11px 12px; border-radius: 14px; font-size: 13px;
+    border: 1px solid color-mix(in srgb, #ff9f1c 45%, transparent);
+    background: color-mix(in srgb, #ff9f1c 10%, transparent);
+  }
+  .drawer .confirm p { margin: 0 0 9px; }
+  .drawer .log {
+    margin-top: 12px; display: grid; gap: 5px; font-size: 12px; color: var(--muted);
+    max-height: min(38vh, 280px); overflow: auto;
+  }
+  .drawer .log div.ok { color: color-mix(in srgb, var(--a) 70%, var(--text)); }
+  .drawer .log div.bad { color: #ff9f9f; }
+  .drawer .log .t { color: rgba(255, 255, 255, .28); margin-right: 6px; }
+
+  /* ── Сфера ────────────────────────────────────── */
+  .orb { --size: 140px; position: relative; width: var(--size); height: var(--size); flex: none; }
+  .orb .glow, .orb .core, .orb .ring { position: absolute; border-radius: 50%; }
+  .orb .glow {
+    inset: -18%; background: radial-gradient(circle, var(--a), transparent 65%);
+    opacity: .45; filter: blur(14px); transition: background 1.2s;
+  }
+  .orb .core {
+    inset: 12%;
+    background: radial-gradient(circle at 32% 28%, #fff 0, var(--a) 28%, var(--b) 75%, #0b1020 100%);
+    box-shadow: 0 0 40px -6px var(--a), inset 0 0 22px rgba(255,255,255,.25);
+    transition: background 1.2s, box-shadow 1.2s, transform .08s linear;
+    animation: breathe 4s ease-in-out infinite;
+  }
+  .orb .ring {
+    inset: 2%; border: 1.5px solid transparent;
+    border-top-color: var(--a); border-right-color: var(--b);
+    opacity: 0; transition: opacity .4s;
+  }
+  .orb .ring.r2 { inset: -6%; border-top-color: var(--b); border-left-color: var(--a); }
+  .orb.thinking .ring { opacity: .8; animation: spin 2.4s linear infinite; }
+  .orb.thinking .ring.r2 { animation-duration: 3.6s; animation-direction: reverse; }
+  .orb.thinking .core { animation: flicker 1.2s ease-in-out infinite; }
+  .orb.speaking .core { animation: none; }
+  .orb.offline .core { filter: saturate(.45) brightness(.62); animation: none; }
+  .orb.offline .glow { opacity: .18; }
+  @keyframes breathe { 50% { transform: scale(1.04); } }
+  @keyframes flicker { 50% { filter: brightness(1.25); transform: scale(.97); } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Основная колонка ─────────────────────────── */
+  main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
   header {
-    padding: 12px 16px; border-bottom: 1px solid var(--accent-dim);
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    height: 56px; flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 0 16px; border-bottom: 1px solid var(--line);
   }
-  header h1 { font-size: 18px; margin: 0; letter-spacing: 1px; }
-  header h1 .dot {
-    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    background: var(--accent); margin-right: 8px;
-    box-shadow: 0 0 10px var(--accent);
+  header .title { font-weight: 600; }
+  .conn { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+  .conn i { width: 8px; height: 8px; border-radius: 50%; background: #f5b942; animation: blink 1s infinite; }
+  .conn.on i { background: #3ddc97; animation: none; box-shadow: 0 0 8px #3ddc97; }
+  .conn.off i { background: #ff5d5d; }
+  @keyframes blink { 50% { opacity: .3; } }
+  .spacer { flex: 1; }
+  .icon-btn {
+    width: 36px; height: 36px; border-radius: 10px; border: 1px solid transparent;
+    background: transparent; cursor: pointer; display: grid; place-items: center;
+    color: var(--muted); transition: background .2s, color .2s;
   }
-  .badge {
-    font-size: 12px; padding: 3px 10px; border-radius: 12px;
-    background: var(--panel); color: var(--muted);
-    border: 1px solid var(--accent-dim);
-  }
-  #emotion { color: var(--accent); }
+  .icon-btn:hover { background: var(--glass-2); color: var(--text); }
+  .icon-btn[aria-pressed="true"] { color: var(--a); }
+  .icon-btn svg { width: 20px; height: 20px; }
+
   #chat {
-    flex: 1; overflow-y: auto; padding: 16px;
-    display: flex; flex-direction: column; gap: 12px;
+    flex: 1; overflow-y: auto; padding: 24px 16px 8px;
+    scroll-behavior: smooth;
   }
-  .msg {
-    max-width: 78%; padding: 10px 14px; border-radius: 14px;
-    line-height: 1.45; white-space: pre-wrap; word-wrap: break-word;
-    animation: fade 0.2s ease;
+  #chat::-webkit-scrollbar { width: 8px; }
+  #chat::-webkit-scrollbar-thumb { background: var(--glass-2); border-radius: 4px; }
+  .feed { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+  .msg { display: flex; flex-direction: column; max-width: 85%; animation: rise .25s ease; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  .msg .bubble {
+    padding: 11px 15px; border-radius: var(--radius); line-height: 1.55;
+    font-size: 15px; word-wrap: break-word; overflow-wrap: anywhere;
   }
-  @keyframes fade { from { opacity: 0; transform: translateY(6px); } }
-  .msg.user {
-    align-self: flex-end; background: var(--user);
-    border-bottom-right-radius: 4px;
+  .msg.user { align-self: flex-end; }
+  .msg.user .bubble {
+    background: linear-gradient(135deg, var(--user-1), var(--user-2));
+    border-bottom-right-radius: 6px; white-space: pre-wrap;
   }
-  .msg.sofia {
-    align-self: flex-start; background: var(--sofia);
-    border-bottom-left-radius: 4px; border: 1px solid var(--accent-dim);
+  .msg.sofia { align-self: flex-start; }
+  .msg.sofia .bubble {
+    background: var(--glass); border: 1px solid var(--line);
+    border-left: 3px solid var(--a); border-bottom-left-radius: 6px;
+    backdrop-filter: blur(18px); transition: border-color 1.2s;
   }
-  .msg .speak {
-    cursor: pointer; opacity: 0.6; margin-left: 8px; font-size: 13px;
+  .msg.error .bubble { border-left-color: #ff5d5d; color: #ffc9c9; }
+  .bubble p { margin: 0 0 .6em; } .bubble p:last-child { margin: 0; }
+  .bubble ul, .bubble ol { margin: .3em 0 .6em; padding-left: 1.3em; }
+  .bubble code {
+    font-family: var(--mono); font-size: 13px; background: rgba(0,0,0,.35);
+    padding: 1px 6px; border-radius: 6px;
   }
-  .msg .speak:hover { opacity: 1; }
-  #thinking {
-    align-self: flex-start; color: var(--muted); font-style: italic;
-    display: none; padding: 4px 14px;
+  .bubble pre {
+    background: rgba(0,0,0,.4); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; overflow-x: auto; margin: .4em 0;
   }
-  #thinking.on { display: block; }
-  #thinking::after { content: "▍"; animation: blink 1s step-end infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-  footer {
-    padding: 12px 16px; border-top: 1px solid var(--accent-dim);
-    display: flex; gap: 10px;
+  .bubble pre code { background: none; padding: 0; }
+  .meta {
+    display: flex; align-items: center; gap: 4px; margin-top: 4px; padding: 0 6px;
+    font-size: 12px; color: var(--muted); min-height: 26px;
   }
+  .msg.user .meta { justify-content: flex-end; }
+  .meta button {
+    border: none; background: none; cursor: pointer; color: var(--muted);
+    padding: 3px 6px; border-radius: 6px; opacity: 0; transition: opacity .15s;
+  }
+  .msg:hover .meta button, .meta button:focus-visible { opacity: 1; }
+  .meta button:hover { color: var(--text); background: var(--glass-2); }
+  .meta button.on { opacity: 1; color: var(--a); }
+  .caret::after { content: "▍"; color: var(--a); animation: blink 1s step-end infinite; }
+  .sources {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+    margin: 6px 0 0; font-size: 12px; color: var(--muted);
+  }
+  .sources span { opacity: .8; }
+  .sources a {
+    color: var(--a); text-decoration: none; border-bottom: 1px dotted var(--a);
+  }
+  .sources a:hover { text-decoration: underline; }
+
+  .typing { display: none; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; padding: 4px 6px; }
+  .typing.on { display: flex; }
+  .typing em { font-style: normal; }
+  .typing span { display: inline-flex; gap: 4px; }
+  .typing span i {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--a);
+    animation: hop 1.2s ease-in-out infinite;
+  }
+  .typing span i:nth-child(2) { animation-delay: .15s; }
+  .typing span i:nth-child(3) { animation-delay: .3s; }
+  @keyframes hop { 30% { transform: translateY(-5px); opacity: 1; } 0%, 60%, 100% { opacity: .4; } }
+
+  /* ── Пустой экран ─────────────────────────────── */
+  .welcome {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: 8vh 12px 0; gap: 10px;
+  }
+  .welcome .orb { --size: 110px; margin-bottom: 18px; }
+  .welcome h2 { margin: 0; font-size: 26px; font-weight: 600; }
+  .welcome p { margin: 0; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 20px; max-width: 560px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--glass); border-radius: 99px;
+    padding: 8px 16px; cursor: pointer; font-size: 14px; transition: border-color .2s, background .2s;
+  }
+  .chip:hover { border-color: var(--a); background: var(--glass-2); }
+
+  /* ── Ввод ─────────────────────────────────────── */
+  footer { flex: none; padding: 8px 16px 18px; }
+  .reconnect {
+    max-width: 760px; margin: 0 auto 8px; font-size: 13px; color: #f5b942;
+    text-align: center; display: none;
+  }
+  .reconnect.on { display: block; }
+  .composer {
+    max-width: 760px; margin: 0 auto; display: flex; align-items: flex-end; gap: 10px;
+    background: var(--glass); border: 1px solid var(--line); border-radius: 22px;
+    padding: 8px 8px 8px 18px; backdrop-filter: blur(18px);
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .composer:focus-within { border-color: var(--a); box-shadow: 0 0 0 4px color-mix(in srgb, var(--a) 15%, transparent); }
   #msg {
-    flex: 1; padding: 12px 14px; border-radius: 10px;
-    border: 1px solid var(--accent-dim); background: var(--panel);
-    color: var(--text); font-size: 15px; outline: none;
+    flex: 1; resize: none; border: none; outline: none; background: none; color: var(--text);
+    font: 15px/1.5 var(--font); padding: 7px 0; max-height: calc(1.5em * 6 + 14px);
   }
-  #msg:focus { border-color: var(--accent); }
-  button#send {
-    padding: 0 20px; border-radius: 10px; border: none;
-    background: var(--accent); color: #002028; font-weight: 600;
-    cursor: pointer; font-size: 15px;
+  #msg::placeholder { color: var(--muted); }
+  #send {
+    width: 40px; height: 40px; flex: none; border-radius: 50%; border: none; cursor: pointer;
+    background: linear-gradient(135deg, var(--a), var(--b)); color: #071018;
+    display: grid; place-items: center; transition: transform .15s, opacity .2s, background 1.2s;
   }
-  button#send:disabled { opacity: 0.4; cursor: default; }
-  @media (max-width: 600px) { .msg { max-width: 90%; } }
+  #send:hover { transform: scale(1.06); }
+  #send:disabled { opacity: .35; cursor: default; transform: none; }
+  #send svg { width: 18px; height: 18px; }
+  #send.busy svg { display: none; }
+  #send.busy::after {
+    content: ""; width: 16px; height: 16px; border-radius: 50%;
+    border: 2px solid #071018; border-right-color: transparent; animation: spin .8s linear infinite;
+  }
+  .hint { max-width: 760px; margin: 6px auto 0; font-size: 11px; color: var(--muted); text-align: center; }
+
+  @media (max-width: 900px) {
+    body, body.collapsed { grid-template-columns: 0 1fr; }
+    aside { padding: 0; border: none; }
+    body.show-side { grid-template-columns: 240px 1fr; }
+    body.show-side aside { padding: 28px 16px 20px; border-right: 1px solid var(--line); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1><span class="dot"></span>СОФИЯ</h1>
-  <span class="badge">эмоция: <span id="emotion">нейтрально</span></span>
-  <span class="badge" id="status">подключение…</span>
-</header>
+<div class="aurora" aria-hidden="true"><i></i><i></i></div>
 
-<div id="chat">
-  <div id="thinking">София думает</div>
+<aside aria-label="Состояние Софии">
+  <div class="orb offline" id="orb" aria-hidden="true">
+    <div class="glow"></div><div class="ring"></div><div class="ring r2"></div><div class="core"></div>
+  </div>
+  <div class="name">СОФИЯ</div>
+  <div class="mood" id="emotion">нейтрально</div>
+
+  <div class="section">
+    <h3>Настроение</h3>
+    <div class="pad">
+      <div><label>Удовольствие <span id="pv">0</span></label><div class="bar"><b id="pb"></b></div></div>
+      <div><label>Возбуждение <span id="av">0</span></label><div class="bar"><b id="ab"></b></div></div>
+      <div><label>Уверенность <span id="dv">0</span></label><div class="bar"><b id="db"></b></div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Сведения</h3>
+    <div class="facts">
+      <div><span>Опыт</span><span id="xp">—</span></div>
+      <div><span>Модель</span><span id="model" title="">—</span></div>
+      <div><span>Голос</span><span id="tts">—</span></div>
+      <div><span>Правила</span><span id="clips">—</span></div>
+      <div><span>Soar</span><span id="soar">—</span></div>
+      <div><span>Книги</span><span id="books">—</span></div>
+      <div><span>Безопасность</span><span id="safety">—</span></div>
+    </div>
+  </div>
+</aside>
+
+<main>
+  <header>
+    <button class="icon-btn" id="toggleSide" aria-label="Скрыть или показать панель" title="Панель">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+    </button>
+    <span class="title">София</span>
+    <span class="conn" id="conn"><i></i><span id="status">подключение…</span></span>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="voiceBtn" aria-pressed="true" aria-label="Голос Софии" title="Голос вкл/выкл">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path id="waves" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path id="mute" d="m16 9 5 6m0-6-5 6" style="display:none"/></svg>
+    </button>
+    <button class="icon-btn" id="browserBtn" aria-pressed="false" aria-label="Браузер и автономный режим" title="Браузер">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3z"/></svg>
+    </button>
+    <button class="icon-btn" id="clearBtn" aria-label="Очистить экран" title="Очистить экран">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+    </button>
+  </header>
+
+  <div id="chat">
+    <div class="feed" id="feed" role="log" aria-live="polite">
+      <div class="welcome" id="welcome">
+        <div class="orb" id="orb2" aria-hidden="true">
+          <div class="glow"></div><div class="ring"></div><div class="ring r2"></div><div class="core"></div>
+        </div>
+        <h2>Привет! Я София</h2>
+        <p>Спроси что-нибудь или просто поболтай со мной.</p>
+        <div class="chips">
+          <button class="chip">Расскажи о себе</button>
+          <button class="chip">Как у тебя настроение?</button>
+          <button class="chip">Что ты умеешь?</button>
+          <button class="chip">Посоветуй, что почитать</button>
+        </div>
+      </div>
+    </div>
+    <div class="feed"><div class="typing" id="typing"><span><i></i><i></i><i></i></span><em id="typingText">София думает…</em></div></div>
+  </div>
+
+  <footer>
+    <div class="reconnect" id="reconnect">Связь потеряна — переподключаюсь…</div>
+    <div class="composer">
+      <textarea id="msg" rows="1" placeholder="Напишите Софии…" aria-label="Сообщение"></textarea>
+      <button id="send" disabled aria-label="Отправить">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+    <div class="hint">Enter — отправить · Shift+Enter — новая строка</div>
+  </footer>
+</main>
+
+<div class="drawer" id="browserPanel" aria-label="Браузер">
+  <h3>Браузер</h3>
+  <p class="status" id="browserStatus">не запущен</p>
+  <div class="row">
+    <input type="text" id="browserUrl" placeholder="адрес сайта" aria-label="Адрес сайта">
+    <button class="act" id="browserOpen">Открыть</button>
+  </div>
+  <div class="row">
+    <input type="text" id="goal" placeholder="что сделать: найди и покажи…" aria-label="Цель автономного режима">
+  </div>
+  <div class="row">
+    <button class="act" id="autoStart">Автономно</button>
+    <button class="act ghost" id="autoStop">Стоп</button>
+  </div>
+  <div class="confirm" id="confirmBox" hidden>
+    <p id="confirmText"></p>
+    <div class="row">
+      <button class="act" id="confirmYes">Разрешить</button>
+      <button class="act ghost" id="confirmNo">Отклонить</button>
+    </div>
+  </div>
+  <div class="log" id="autoLog" aria-live="polite"></div>
 </div>
 
-<footer>
-  <input id="msg" type="text" placeholder="Скажи что-нибудь…" autocomplete="off" disabled>
-  <button id="send" disabled>Отправить</button>
-</footer>
-
 <script>
-const chat = document.getElementById("chat");
-const thinking = document.getElementById("thinking");
-const input = document.getElementById("msg");
-const sendBtn = document.getElementById("send");
-const emotionEl = document.getElementById("emotion");
-const statusEl = document.getElementById("status");
+const $ = (id) => document.getElementById(id);
+const feed = $("feed"), chat = $("chat"), typing = $("typing");
+const typingText = $("typingText"), typingHint = "София думает…";
 
-let ws, current = null, lastText = "";
+function setStatus(text) {
+  typingText.textContent = text || typingHint;
+}
+const input = $("msg"), sendBtn = $("send");
+const orbs = [$("orb"), $("orb2")];
 
-// Цвет фона по эмоции
+// ── Эмоции → цвета ───────────────────────────────────
 const EMOTION_COLORS = {
-  "радость": "#0a1a0e", "грусть": "#0a0e1a", "гнев": "#1a0a0a",
-  "страх": "#120a1a", "доверие": "#0a1518", "отвращение": "#0f1a0a",
-  "удивление": "#1a140a", "ожидание": "#0a0e1a", "нейтрально": "#0a0e1a",
+  "нейтрально": ["#38e8ff", "#7b5cff"],
+  "радость":    ["#ffd166", "#ff8fab"],
+  "грусть":     ["#5b8def", "#3a4a8c"],
+  "гнев":       ["#ff5d5d", "#ff9f1c"],
+  "страх":      ["#a06cff", "#3d2a7a"],
+  "доверие":    ["#3ddc97", "#38e8ff"],
+  "отвращение": ["#9bc53d", "#5a7a2a"],
+  "удивление":  ["#ff9ff3", "#feca57"],
+  "ожидание":   ["#48dbfb", "#ff9ff3"],
 };
+
+function setEmotion(emotion) {
+  const [a, b] = EMOTION_COLORS[emotion] || EMOTION_COLORS["нейтрально"];
+  document.documentElement.style.setProperty("--a", a);
+  document.documentElement.style.setProperty("--b", b);
+  $("emotion").textContent = emotion || "нейтрально";
+}
+
+function setPad(pad) {
+  if (!pad) return;
+  for (const [k, v] of [["P", "p"], ["A", "a"], ["D", "d"]]) {
+    const val = Math.max(-1, Math.min(1, Number(pad[k]) || 0));
+    const bar = $(v + "b");
+    const w = Math.abs(val) * 50;
+    // нулевое значение — точка по центру, иначе полоса от середины
+    bar.style.left = (w < 1 ? 47 : val < 0 ? 50 - w : 50) + "%";
+    bar.style.width = (w < 1 ? 6 : w) + "%";
+    $(v + "v").textContent = (val > 0 ? "+" : "") + val.toFixed(2);
+  }
+}
+
+function setOrb(state) {
+  for (const o of orbs) {
+    o.classList.remove("thinking", "speaking", "offline");
+    if (state) o.classList.add(state);
+  }
+}
+
+// «21 правило», «2 чанка», «5 правил»
+function plural(n, forms) {
+  const ten = n % 10, hundred = n % 100;
+  const i = ten === 1 && hundred !== 11 ? 0 : (ten >= 2 && ten <= 4 && (hundred < 10 || hundred >= 20) ? 1 : 2);
+  return forms[i];
+}
+
+// ── Состояние с сервера ─────────────────────────────
+async function refreshState() {
+  try {
+    const r = await fetch("/state");
+    if (!r.ok) return;
+    const s = await r.json();
+    setPad(s);
+    if (s.dominant_emotion) setEmotion(s.dominant_emotion);
+    $("xp").textContent = "★ " + (s.xp ?? 0);
+    if (s.model) { $("model").textContent = s.model; $("model").title = s.model; }
+    $("tts").textContent = s.tts === undefined ? "—" : (s.tts ? "XTTS" : "выключен");
+    if (s.clips) $("clips").textContent = s.clips.active
+      ? `${s.clips.rules} ${plural(s.clips.rules, ["правило", "правила", "правил"])}`
+      : "недоступен";
+    if (s.soar) {
+      const learned = s.soar.chunks || 0;
+      $("soar").textContent = s.soar.active
+        ? (learned
+            ? `${s.soar.rules} + ${learned} ${plural(learned, ["чанк", "чанка", "чанков"])}`
+            : `${s.soar.rules} ${plural(s.soar.rules, ["правило", "правила", "правил"])}`)
+        : "симуляция";
+      $("soar").title = (s.soar.learned || []).join("\n");
+    }
+    $("safety").textContent = s.safety_mode || "—";
+    if (s.books) {
+      const n = s.books.chunks || 0;
+      $("books").textContent = !s.books.active
+        ? "выключены"
+        : (n ? `${n} ${plural(n, ["фрагмент", "фрагмента", "фрагментов"])}` : "пусто");
+      $("books").title = n
+        ? "Папка data/library — София ищет ответ по этим книгам"
+        : "Положите PDF в data/library, и она проиндексирует их сама";
+    }
+  } catch (_) { /* сервер недоступен */ }
+}
+
+// ── Безопасная мини-разметка ─────────────────────────
+function esc(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function inline(s) {
+  return s
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+}
+function render(text) {
+  const parts = esc(text).split(/```/);
+  let html = "";
+  parts.forEach((part, i) => {
+    if (i % 2) { html += "<pre><code>" + part.replace(/^\w*\n/, "") + "</code></pre>"; return; }
+    for (const block of part.split(/\n{2,}/)) {
+      if (!block.trim()) continue;
+      const lines = block.split("\n");
+      if (lines.every((l) => /^\s*([-*•]|\d+[.)])\s+/.test(l) || !l.trim())) {
+        const ordered = /^\s*\d/.test(lines[0]);
+        html += (ordered ? "<ol>" : "<ul>") +
+          lines.filter((l) => l.trim()).map((l) => "<li>" + inline(l.replace(/^\s*([-*•]|\d+[.)])\s+/, "")) + "</li>").join("") +
+          (ordered ? "</ol>" : "</ul>");
+      } else {
+        html += "<p>" + inline(lines.join("<br>")) + "</p>";
+      }
+    }
+  });
+  return html;
+}
+
+// ── Сообщения ───────────────────────────────────────
+let current = null;
+let lastSofia = null;
+let pendingSources = [];
+let lastUserQuestion = "";
+const time = () => new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+
+function addMsg(role, text) {
+  $("welcome")?.remove();
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const stamp = document.createElement("span");
+  stamp.textContent = time();
+  meta.appendChild(stamp);
+  const item = { div, bubble, text: text || "", question: lastUserQuestion };
+  if (role === "user") bubble.textContent = text;
+  else {
+    bubble.innerHTML = render(item.text);
+    meta.appendChild(metaBtn("Копировать", "⧉", () => navigator.clipboard?.writeText(item.text)));
+    meta.appendChild(metaBtn("Озвучить ещё раз", "🔊", () => speakText(item.text)));
+    const up = metaBtn("Ответ полезен", "👍", () => sendFeedback(1, item, up, down));
+    const down = metaBtn("Ответ неверен или не по делу", "👎", () => sendFeedback(-1, item, down, up));
+    meta.append(up, down);
+  }
+  div.append(bubble, meta);
+  feed.appendChild(div);
+  if (role !== "user" && !role.includes("error")) {
+    lastSofia = item;
+    if (pendingSources.length) {
+      renderSources(item, pendingSources);
+      pendingSources = [];
+    }
+  }
+  scroll();
+  return item;
+}
+
+// Источники из интернета: кликабельны, открываются в вашем браузере
+function addSources(items) {
+  if (!items || !items.length) return;
+  const msg = current || (waiting ? null : lastSofia);
+  if (!msg) { pendingSources = items; return; }
+  renderSources(msg, items);
+}
+
+function renderSources(msg, items) {
+  if (msg.sources) msg.sources.remove();
+  const box = document.createElement("div");
+  box.className = "sources";
+  const label = document.createElement("span");
+  label.textContent = "Источники:";
+  box.appendChild(label);
+  items.slice(0, 4).forEach((s) => {
+    const name = s.site || s.title;
+    if (!name) return;
+    const node = document.createElement(s.url ? "a" : "span");
+    node.textContent = name;
+    // Без target=_blank: ссылку перехватывает SofiaPage и открывает
+    // в системном браузере (target=_blank ушёл бы в невидимую страницу).
+    if (s.url) { node.href = s.url; node.rel = "noopener"; }
+    node.title = [s.title, s.snippet].filter(Boolean).join(" — ");
+    box.appendChild(node);
+  });
+  msg.div.appendChild(box);
+  msg.sources = box;
+  scroll();
+}
+
+function metaBtn(label, glyph, onClick) {
+  const b = document.createElement("button");
+  b.type = "button"; b.textContent = glyph; b.title = label;
+  b.setAttribute("aria-label", label);
+  b.onclick = onClick;
+  return b;
+}
+
+// Оценка ответа: одна на сообщение, повторный клик по той же кнопке — отмена
+function sendFeedback(rating, item, mine, other) {
+  if (item.rating === rating) return;
+  item.rating = rating;
+  mine.classList.add("on");
+  other.classList.remove("on");
+  fetch("/api/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rating, question: item.question || "", answer: item.text }),
+  }).catch(() => {});
+}
+
+function setThinking(on) {
+  typing.classList.toggle("on", on);
+  sendBtn.classList.toggle("busy", on || !!current);
+  if (on) { setStatus(null); setOrb("thinking"); }
+  else if (!speaking) setOrb(connected ? null : "offline");
+  scroll();
+}
+
+function appendToken(tok) {
+  if (!current) {
+    setThinking(false);
+    current = addMsg("sofia", "");
+    current.bubble.classList.add("caret");
+    sendBtn.classList.add("busy");
+  }
+  current.text += tok;
+  current.bubble.innerHTML = render(current.text);
+  scroll();
+}
+
+function finishStream() {
+  if (current) current.bubble.classList.remove("caret");
+  current = null;
+  waiting = false;
+  setThinking(false);
+  updateSend();
+  refreshState();
+}
+
+function scroll() {
+  const near = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 160;
+  if (near || !current) chat.scrollTop = chat.scrollHeight;
+}
+
+// ── WebSocket ───────────────────────────────────────
+let ws, connected = false, waiting = false;
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/chat`);
   ws.binaryType = "arraybuffer";
-
   ws.onopen = () => {
-    statusEl.textContent = "онлайн";
-    input.disabled = false; sendBtn.disabled = false; input.focus();
+    connected = true;
+    $("conn").className = "conn on"; $("status").textContent = "онлайн";
+    $("reconnect").classList.remove("on");
+    setOrb(null); updateSend(); input.focus();
+    refreshState();
   };
   ws.onclose = () => {
-    statusEl.textContent = "отключено";
-    input.disabled = true; sendBtn.disabled = true;
+    const was = connected;
+    connected = false;
+    $("conn").className = "conn off"; $("status").textContent = "нет связи";
+    if (was) $("reconnect").classList.add("on");
+    if (current || waiting) finishStream();
+    setOrb("offline"); updateSend();
     setTimeout(connect, 2000);
   };
   ws.onmessage = onMessage;
 }
 
 function onMessage(e) {
-  // Бинарное сообщение = аудио
-  if (e.data instanceof ArrayBuffer) {
-    playAudio(e.data);
-    return;
-  }
-  // JSON-служебные сообщения
+  if (e.data instanceof ArrayBuffer) { playAudio(e.data); return; }
   if (e.data.startsWith("{")) {
     try {
       const m = JSON.parse(e.data);
-      if (m.type === "meta" && m.emotion) setEmotion(m.emotion);
-      else if (m.type === "error") { finishStream(); addMsg("sofia", "⚠ " + m.error); }
-      else if (m.type === "replace" && current) current.textNode.textContent = m.text;
+      if (m.type === "meta") { if (m.emotion) setEmotion(m.emotion); setPad(m.pad); }
+      else if (m.type === "status") setStatus(m.text);
+      else if (m.type === "sources") addSources(m.web);
+      else if (m.type === "error") { finishStream(); addMsg("sofia error", "⚠ " + m.error); }
+      else if (m.type === "replace" && current) { current.text = m.text; current.bubble.innerHTML = render(m.text); }
       return;
     } catch (_) { /* обычный текст */ }
   }
@@ -156,78 +721,77 @@ function onMessage(e) {
   appendToken(e.data);
 }
 
-function setEmotion(emotion) {
-  emotionEl.textContent = emotion;
-  document.body.style.background = EMOTION_COLORS[emotion] || EMOTION_COLORS["нейтрально"];
+function updateSend() {
+  sendBtn.disabled = !connected || waiting || !input.value.trim();
 }
 
-function addMsg(role, text) {
-  const div = document.createElement("div");
-  div.className = "msg " + role;
-  const span = document.createElement("span");
-  span.textContent = text;
-  div.appendChild(span);
-  if (role === "sofia") {
-    const speak = document.createElement("span");
-    speak.className = "speak"; speak.textContent = "🔊";
-    speak.onclick = () => speakText(span.textContent);
-    div.appendChild(speak);
-  }
-  chat.insertBefore(div, thinking);
-  scroll();
-  return { div, textNode: span };
-}
-
-function appendToken(tok) {
-  thinking.classList.remove("on");
-  if (!current) current = addMsg("sofia", "");
-  current.textNode.textContent += tok;
-  lastText = current.textNode.textContent;
-  scroll();
-}
-
-function finishStream() {
-  thinking.classList.remove("on");
-  current = null;
-}
-
-function send() {
-  const text = input.value.trim();
-  if (!text || ws.readyState !== WebSocket.OPEN) return;
+function send(text) {
+  text = (text ?? input.value).trim();
+  if (!text || !connected || waiting) return;
+  unlockAudio();
   addMsg("user", text);
+  lastUserQuestion = text;
   ws.send(text);
-  input.value = "";
-  thinking.classList.add("on");
-  chat.appendChild(thinking);
-  scroll();
+  input.value = ""; autosize();
+  waiting = true;
+  updateSend();
+  setThinking(true);
 }
 
-function scroll() { chat.scrollTop = chat.scrollHeight; }
-
-// Воспроизведение аудио от XTTS.
-// Сервер шлёт речь по предложениям (несколько фреймов подряд), поэтому
-// воспроизводим их по очереди, а не одновременно.
+// ── Голос ───────────────────────────────────────────
+let voiceOn = localStorage.getItem("sofia.voice") !== "off";
+let audioCtx = null, analyser = null, speaking = false;
 const audioQueue = [];
-let audioPlaying = false;
+
+function applyVoiceButton() {
+  $("voiceBtn").setAttribute("aria-pressed", String(voiceOn));
+  $("waves").style.display = voiceOn ? "" : "none";
+  $("mute").style.display = voiceOn ? "none" : "";
+}
+
+function unlockAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
 
 function playAudio(buffer) {
-  const blob = new Blob([buffer], { type: "audio/wav" });
-  audioQueue.push(URL.createObjectURL(blob));
-  if (!audioPlaying) playNextAudio();
+  if (!voiceOn) return;
+  audioQueue.push(buffer);
+  if (!speaking) playNext();
 }
 
-function playNextAudio() {
-  if (audioQueue.length === 0) { audioPlaying = false; return; }
-  audioPlaying = true;
-  const url = audioQueue.shift();
-  const audio = new Audio(url);
-  const done = () => { URL.revokeObjectURL(url); playNextAudio(); };
-  audio.onended = done;
-  audio.onerror = done;
-  audio.play().catch(done);
+async function playNext() {
+  if (!audioQueue.length) { speaking = false; setOrb(connected ? (waiting ? "thinking" : null) : "offline"); return; }
+  speaking = true;
+  unlockAudio();
+  setOrb("speaking");
+  try {
+    const decoded = await audioCtx.decodeAudioData(audioQueue.shift());
+    const src = audioCtx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(analyser);
+    src.onended = playNext;
+    src.start();
+    pulse();
+  } catch (_) { playNext(); }
 }
 
-// Повторная озвучка — браузерный TTS (fallback, если нет серверного аудио)
+function pulse() {
+  if (!speaking) { orbs.forEach((o) => (o.querySelector(".core").style.transform = "")); return; }
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteTimeDomainData(data);
+  let sum = 0;
+  for (const v of data) sum += ((v - 128) / 128) ** 2;
+  const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
+  orbs.forEach((o) => (o.querySelector(".core").style.transform = `scale(${1 + level * 0.12})`));
+  requestAnimationFrame(pulse);
+}
+
 function speakText(text) {
   if (!window.speechSynthesis) return;
   const u = new SpeechSynthesisUtterance(text);
@@ -235,12 +799,157 @@ function speakText(text) {
   speechSynthesis.speak(u);
 }
 
-sendBtn.onclick = send;
+// ── Ввод и кнопки ──────────────────────────────────
+function autosize() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 180) + "px";
+}
+
+input.addEventListener("input", () => { autosize(); updateSend(); });
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  if (e.key === "Escape") input.blur();
 });
+sendBtn.onclick = () => send();
+document.querySelectorAll(".chip").forEach((c) => (c.onclick = () => send(c.textContent)));
 
+$("voiceBtn").onclick = () => {
+  voiceOn = !voiceOn;
+  localStorage.setItem("sofia.voice", voiceOn ? "on" : "off");
+  if (!voiceOn) audioQueue.length = 0;
+  applyVoiceButton();
+};
+$("clearBtn").onclick = () => {
+  feed.querySelectorAll(".msg").forEach((m) => m.remove());
+};
+$("toggleSide").onclick = () => {
+  if (window.matchMedia("(max-width: 900px)").matches) document.body.classList.toggle("show-side");
+  else document.body.classList.toggle("collapsed");
+};
+
+applyVoiceButton();
+setEmotion("нейтрально");
+setPad({ P: 0, A: 0, D: 0 });
 connect();
+setInterval(refreshState, 5000);
+
+// ── Браузер и автономный режим ─────────────────────
+const drawer = $("browserPanel");
+let autoTimer = null;
+let pendingConfirm = null;
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!r.ok) {
+    let msg = text;
+    try { msg = JSON.parse(text).detail || text; } catch (_) { /* как есть */ }
+    throw new Error(msg);
+  }
+  return text ? JSON.parse(text) : {};
+}
+
+function showStatus(text) { $("browserStatus").textContent = text; }
+
+async function refreshBrowser() {
+  try {
+    const s = await api("/api/browser/state");
+    showStatus(!s.enabled ? "выключен в настройках"
+      : !s.running ? "не запущен — нажмите «Открыть»"
+      : `${s.title || "страница"} — ${s.url}`);
+  } catch (e) { showStatus("сервер не отвечает"); }
+}
+
+function renderLog(items) {
+  const box = $("autoLog");
+  box.textContent = "";
+  pendingConfirm = null;
+  items.slice(-14).forEach((e) => {
+    if (e.type === "confirm") pendingConfirm = e;
+    const row = document.createElement("div");
+    if (e.type === "step") {
+      row.className = (e.result && e.result.ok) ? "ok" : "bad";
+      row.textContent = e.line || "";
+    } else if (e.type === "finish") {
+      row.className = e.ok ? "ok" : "bad";
+      row.textContent = (e.ok ? "готово: " : "стоп: ") + (e.summary || "");
+    } else if (e.type === "confirm") {
+      row.textContent = "нужно подтверждение: " + (e.reason || "");
+    } else if (e.type === "ask") {
+      row.textContent = "вопрос: " + (e.question || "");
+    } else if (e.type === "skill") {
+      row.textContent = "похожая задача уже удавалась — подсказываю прошлый путь";
+    } else {
+      return;
+    }
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = e.at || "";
+    row.prepend(t);
+    box.appendChild(row);
+  });
+  const boxEl = $("confirmBox");
+  boxEl.hidden = !pendingConfirm;
+  if (pendingConfirm) $("confirmText").textContent = pendingConfirm.reason || "";
+}
+
+async function refreshAuto() {
+  try {
+    const s = await api("/api/autopilot/state");
+    renderLog(s.log || []);
+    const running = s.state && s.state.running;
+    if (running) {
+      showStatus(`автономно: шаг ${s.state.steps} — ${s.state.last || "думает"}`);
+    } else {
+      refreshBrowser();
+    }
+  } catch (_) { /* сервер занят */ }
+}
+
+$("browserBtn").onclick = () => {
+  const open = !drawer.classList.contains("open");
+  drawer.classList.toggle("open", open);
+  $("browserBtn").setAttribute("aria-pressed", String(open));
+  if (open) { refreshBrowser(); refreshAuto(); }
+  clearInterval(autoTimer);
+  if (open) autoTimer = setInterval(refreshAuto, 1500);
+};
+
+$("browserOpen").onclick = async () => {
+  const url = $("browserUrl").value.trim();   // пусто — откроется Google
+  showStatus("запускаю Chrome…");
+  try {
+    await api("/api/browser/open", { url });
+    refreshBrowser();
+  } catch (e) { showStatus("не вышло: " + e.message); }
+};
+
+$("autoStart").onclick = async () => {
+  const goal = $("goal").value.trim();
+  if (!goal) { $("goal").focus(); return; }
+  try {
+    await api("/api/autopilot", { goal, url: $("browserUrl").value.trim() });
+    refreshAuto();
+  } catch (e) { showStatus("не вышло: " + e.message); }
+};
+
+$("autoStop").onclick = async () => {
+  try { await api("/api/autopilot/stop", {}); } catch (_) { /* уже стоит */ }
+  refreshAuto();
+};
+
+$("confirmYes").onclick = async () => {
+  try { await api("/api/autopilot/confirm", { allow: true }); } catch (_) {}
+  $("confirmBox").hidden = true;
+};
+$("confirmNo").onclick = async () => {
+  try { await api("/api/autopilot/confirm", { allow: false }); } catch (_) {}
+  $("confirmBox").hidden = true;
+};
 </script>
 </body>
 </html>

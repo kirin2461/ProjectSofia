@@ -12,3 +12,25 @@ chroma_db/
 venv/
 .pytest_cache/
 *.log
+
+# Сборка лаунчера
+build/
+dist/
+models/
+bin/
+logs/
+sofia.lock
+
+# Модель эмбеддингов (~113 МБ) скачивается build.ps1
+assets/embed/
+data/lora/
+
+# Свой golden set (вопросы по вашим книгам); пример — eval/golden.example.jsonl
+eval/golden.jsonl
+
+# Личные данные: переписки и датасеты — никогда не коммитить и не паковать
+FluffyDataset/
+ChatExport*/
+dataset_*/
+**/messages*.html
+**/transcripts.csv

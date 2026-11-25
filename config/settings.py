@@ -44,6 +44,9 @@ TARGET = {
     "OLLAMA_HOST": "http://localhost:11434",
     "MODEL_BRAIN": "qwen3:4b",
     "MODEL_EXTRACTOR": "qwen3:1.7b",      # быстрая текстовая модель для фактов
+    # Модель для шагов автопилота (решить «куда нажать») — быстрая и дешёвая:
+    # думающая модель на каждом шаге съедала бы секунды на ровном месте
+    "MODEL_STEP": "qwen3:1.7b",
     "MODEL_EMBED": "bge-m3",
     "MODEL_VLM": "qwen3-vl:2b",           # мультимодальная модель (зрение + текст)
     "NUM_CTX": 32768,
@@ -58,12 +61,17 @@ TARGET = {
     # auto: GPU, если свободно >= TTS_MIN_FREE_VRAM GB, иначе CPU
     "TTS_DEVICE": "auto",
     "TTS_MIN_FREE_VRAM": 2.0,
+    "TTS_ENABLED": True,           # озвучка XTTS (выключается .env)
+    "SOAR_ENABLED": True,          # настоящий Soar вместо резервной модели
     "CLIPS_RULES_DIR": "core/clips_rules",
+    "SOAR_RULES_DIR": "core/soar_rules",
+    "SOAR_CHUNKS_PATH": "data/soar_chunks.soar",
     "SAFETY_MODE": "standard",
     "SAFETY_LOG_PATH": "data/safety_log.jsonl",
     "ACTION_LOG_PATH": "data/action_log.jsonl",
     "EMOTION_STATE_PATH": "data/emotion_state.json",
     "XP_PATH": "data/xp.json",
+    "PROFILE_PATH": "data/profile.json",
     "API_PORT": 8000,
     "API_HOST": "0.0.0.0",
     "DEBUG": False,
@@ -76,6 +84,34 @@ TARGET = {
     "LIBRARY_CHUNK_SIZE": 800,
     "LIBRARY_CHUNK_OVERLAP": 80,
     "EPISODE_SUMMARY_DAYS": 7,
+    "CONTEXT_BUDGET_TOKENS": 0,  # 0 — авто: min(6000, 35% от NUM_CTX)
+
+    # Библиотека книг (PDF → Chroma → контекст ответа)
+    "LIBRARY_ENABLED": True,
+    "LIBRARY_TOP_K": 4,          # сколько фрагментов попадает в промпт
+    "LIBRARY_POOL": 24,          # сколько кандидатов достаём из Chroma до переранжирования
+    "LIBRARY_MIN_SCORE": 0.52,   # ниже — считаем нерелевантным и молчим
+    "LIBRARY_OCR": "auto",       # auto | off — OCR страниц без текстового слоя
+    "LIBRARY_PARENT_EXPAND": True,  # дополнять найденный абзац до секции/соседей
+    "LIBRARY_RERANK_DIR": "",    # ONNX-реранкер; пусто — выключен
+
+    # Браузер и автономный режим (Chrome через DevTools Protocol)
+    "BROWSER_ENABLED": True,
+    "BROWSER_PORT": 9222,
+    # sofia — отдельный профиль (ваш Chrome не трогается),
+    # user  — ваш профиль (Chrome должен быть закрыт)
+    "BROWSER_PROFILE": "sofia",
+    "AUTOPILOT_MAX_STEPS": 12,
+    "AUTOPILOT_BARRIER": True,   # подтверждение на деньги и отправку
+
+    # Поиск в интернете: она ищет сама, когда просят или нужны свежие данные
+    "WEB_SEARCH_ENABLED": True,
+    # google — в своём свёрнутом окне Chrome (быстро и точно),
+    # bing   — обычная выдача без браузера (медленнее и менее надёжно)
+    "WEB_SEARCH_ENGINE": "google",
+    "WEB_FETCH_PAGES": 2,        # сколько сайтов из выдачи читать целиком
+    "WEB_MAX_RESULTS": 5,        # сколько ссылок брать из выдачи
+    "WEB_SEARCH_TIMEOUT": 12.0,  # потолок ожидания поиска в одном ходе, с
 
     # ═══════════════════════════════════════════════════
     # ОПЦИОНАЛЬНЫЕ РАСШИРЕНИЯ (Phase 6)
@@ -128,9 +164,31 @@ _ENV_MAP = {
     "LLM_API_KEY": (str,),
     "MODEL_BRAIN": (str,),
     "MODEL_EXTRACTOR": (str,),
+    "MODEL_STEP": (str,),
     "MODEL_EMBED": (str,),
     "MODEL_VLM": (str,),
     "SAFETY_MODE": (str,),
+    "SOAR_RULES_DIR": (str,),
+    "SOAR_CHUNKS_PATH": (str,),
+    "TTS_ENABLED": (bool,),
+    "SOAR_ENABLED": (bool,),
+    "LIBRARY_ENABLED": (bool,),
+    "LIBRARY_TOP_K": (int,),
+    "LIBRARY_POOL": (int,),
+    "LIBRARY_MIN_SCORE": (float,),
+    "LIBRARY_OCR": (str,),
+    "LIBRARY_PARENT_EXPAND": (bool,),
+    "LIBRARY_RERANK_DIR": (str,),
+    "BROWSER_ENABLED": (bool,),
+    "BROWSER_PORT": (int,),
+    "BROWSER_PROFILE": (str,),
+    "AUTOPILOT_MAX_STEPS": (int,),
+    "AUTOPILOT_BARRIER": (bool,),
+    "WEB_SEARCH_ENABLED": (bool,),
+    "WEB_SEARCH_ENGINE": (str,),
+    "WEB_FETCH_PAGES": (int,),
+    "WEB_MAX_RESULTS": (int,),
+    "WEB_SEARCH_TIMEOUT": (float,),
     "API_PORT": (int,),
     "API_HOST": (str,),
     "VISION_ENABLED": (bool,),
@@ -140,6 +198,7 @@ _ENV_MAP = {
     "STREAM_RTMP_URL": (str,),
     "TEMPERATURE": (float,),
     "MAX_HISTORY": (int,),
+    "CONTEXT_BUDGET_TOKENS": (int,),
     "DEBUG": (bool,),
     "XTTS_MODEL_PATH": (str,),
     "TTS_DEVICE": (str,),
@@ -224,3 +283,6 @@ if VISION_ENABLED:
     #   MODEL_EXTRACTOR_ACTIVE = "qwen3:1.7b"
 else:
     MODEL_EXTRACTOR_ACTIVE = MODEL_EXTRACTOR
+
+# Шаги автопилота: отдельная модель (MODEL_STEP), по умолчанию та же быстрая
+MODEL_STEP_ACTIVE = globals().get("MODEL_STEP") or MODEL_EXTRACTOR_ACTIVE

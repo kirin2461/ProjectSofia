@@ -73,8 +73,23 @@ def test_smart_chunk_fallback_fixed():
     doc = FakeDoc("Слово " * 500)
     chunks = smart_chunk_pdf(doc)
     assert chunks
-    assert chunks[0]["chapter"].startswith("Часть")
+    # Главы в книге нет — и выдумывать «Часть 1» нельзя: цитата должна
+    # читаться как «Сивухин, с. 45», а не «Сивухин, Часть 1, с. 45».
+    assert chunks[0]["chapter"] == ""
     assert chunks[0]["page_end"] == doc.page_count
+
+
+def test_fallback_pages_are_real_not_one_to_last():
+    pages = [FakePage("Страница " * 60) for _ in range(12)]
+    doc = FakeDoc("", pages=pages)
+    chunks = smart_chunk_pdf(doc)
+    assert len(chunks) > 1
+    # каждый чанк привязан к своему диапазону, а не ко всей книге
+    assert all(c["page_start"] >= 1 and c["page_end"] <= 12 for c in chunks)
+    assert chunks[0]["page_start"] == 1
+    assert chunks[0]["page_end"] < 12
+    assert [c["page_start"] for c in chunks] == sorted(c["page_start"] for c in chunks)
+    assert all(c["page_start"] <= c["page_end"] for c in chunks)
 
 
 def test_metadata_present():

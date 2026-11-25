@@ -1,0 +1,87 @@
+# Агент Софии для Soar 9.6 — выбор стратегии ответа.
+#
+# Вход (input-link), его заполняет core/soar_bridge.py:
+#   ^message <m>
+#     <m> ^id <int> ^greeting yes|no ^question yes|no
+#         ^vague yes|no ^context yes|no
+#
+# Выход (output-link):
+#   ^command <c>  (<c> ^name greet|answer-question|respond|ask-clarification
+#                      ^msg-id <int>)
+#
+# Неоднозначное сообщение без контекста предлагает сразу два оператора —
+# ответ и уточнение — без предпочтений между ними. Это tie-импасс: в
+# подсостоянии правило разрешает его в пользу уточнения, а чанкинг
+# компилирует решение в новое правило верхнего уровня. Выученные чанки
+# мост сохраняет в data/soar_chunks.soar и подгружает при запуске.
+
+chunk always
+
+# ── Интенты ──────────────────────────────────────────────────────────────
+sp {sofia*elaborate*intent*greeting
+   (state <s> ^superstate nil ^io.input-link.message <m>)
+   (<m> ^greeting yes)
+-->
+   (<s> ^intent greeting)}
+
+sp {sofia*elaborate*intent*question
+   (state <s> ^superstate nil ^io.input-link.message <m>)
+   (<m> ^greeting no ^question yes)
+-->
+   (<s> ^intent question)}
+
+sp {sofia*elaborate*intent*statement
+   (state <s> ^superstate nil ^io.input-link.message <m>)
+   (<m> ^greeting no ^question no)
+-->
+   (<s> ^intent statement)}
+
+sp {sofia*elaborate*ambiguous
+   (state <s> ^superstate nil ^io.input-link.message <m>)
+   (<m> ^vague yes ^context no ^greeting no)
+-->
+   (<s> ^ambiguous yes)}
+
+# ── Предложения операторов ───────────────────────────────────────────────
+# Мост держит в input-link только текущее сообщение и останавливает агент
+# на первой команде (RunSelfTilOutput), поэтому повторных предложений нет.
+sp {sofia*propose*greet
+   (state <s> ^superstate nil ^intent greeting ^io.input-link.message.id <id>)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name greet ^msg-id <id>)}
+
+sp {sofia*propose*answer-question
+   (state <s> ^superstate nil ^intent question ^io.input-link.message.id <id>)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name answer-question ^msg-id <id>)}
+
+sp {sofia*propose*respond
+   (state <s> ^superstate nil ^intent statement ^io.input-link.message.id <id>)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name respond ^msg-id <id>)}
+
+sp {sofia*propose*ask-clarification
+   (state <s> ^superstate nil ^ambiguous yes ^io.input-link.message.id <id>)
+-->
+   (<s> ^operator <o> +)
+   (<o> ^name ask-clarification ^msg-id <id>)}
+
+# ── Импасс: tie между ответом и уточнением ───────────────────────────────
+sp {sofia*tie*prefer*clarification
+   (state <s> ^impasse tie ^superstate <ss> ^item <clar> ^item <ans>)
+   (<clar> ^name ask-clarification)
+   (<ans> ^name << answer-question respond >>)
+   (<ss> ^ambiguous yes)
+-->
+   (<ss> ^operator <clar> > <ans>)}
+
+# ── Применение: команда на output-link ───────────────────────────────────
+sp {sofia*apply*command
+   (state <s> ^operator <o> ^io.output-link <out>)
+   (<o> ^name <name> ^msg-id <id>)
+-->
+   (<out> ^command <c>)
+   (<c> ^name <name> ^msg-id <id>)}

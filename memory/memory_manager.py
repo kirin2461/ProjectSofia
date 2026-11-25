@@ -156,8 +156,9 @@ class _FallbackCollection:
     def count(self) -> int:
         return len(self._data["ids"])
 
-    def query(self, query_texts, n_results=3, where=None, **kwargs):
-        q = query_texts[0] if query_texts else ""
+    def query(self, query_texts=None, n_results=3, where=None,
+              query_embeddings=None, **kwargs):
+        q = (query_texts[0] if query_texts else "") or ""
         qv = _hash_embed(q)
         scored = []
         for i in range(len(self._data["ids"])):
@@ -211,19 +212,59 @@ def _sanitize_metadata(metadata: dict) -> dict:
 # ═══════════════════════════════════════════════════════════
 # Инициализация коллекций
 # ═══════════════════════════════════════════════════════════
-_embedder = _make_embedder()
+_hash_embedder = _make_embedder()
+
+try:  # локальные многоязычные векторы (основной путь, работает offline)
+    from memory.embedder import get_embedder
+
+    _embedder = get_embedder()
+except Exception:  # noqa: BLE001
+    _embedder = None
+
+# Если локальной модели нет — остаётся старый путь (Ollama bge-m3 / Chroma default)
+_embedder = _embedder or _hash_embedder
+EMBED_TAG = getattr(_embedder, "tag", "default")
+
+
+def _collection_name(base: str) -> str:
+    """Имя коллекции зависит от модели эмбеддингов: разные векторы не смешиваем."""
+    return f"{base}__{EMBED_TAG}"
+
+
+def _embed_passages(texts: List[str]) -> Optional[List[List[float]]]:
+    if _embedder is None or not hasattr(_embedder, "embed_documents"):
+        return None
+    return _embedder.embed_documents(texts)
+
+
+def _embed_query(text: str) -> Optional[List[float]]:
+    if _embedder is None or not hasattr(_embedder, "embed_query"):
+        return None
+    return _embedder.embed_query(text)
+
 
 try:
     import chromadb
 
     _collection_kwargs = {"embedding_function": _embedder} if _embedder else {}
+    _local_kwargs = (
+        {"embedding_function": None, "metadata": {"hnsw:space": "cosine"}}
+        if hasattr(_embedder, "tag")
+        else _collection_kwargs
+    )
     episodic_client = chromadb.PersistentClient(path=MEMORY_DB_PATH)
     library_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
-    episodes = episodic_client.get_or_create_collection("episodes", **_collection_kwargs)
-    books = library_client.get_or_create_collection("library", **_collection_kwargs)
+    episodes = episodic_client.get_or_create_collection(
+        _collection_name("episodes"), **_local_kwargs
+    )
+    books = library_client.get_or_create_collection(
+        _collection_name("library"), **_local_kwargs
+    )
     BACKEND = "chroma"
 except ImportError:
     logger.warning("chromadb не установлен — JSON fallback-стор (dev/тесты)")
+    episodic_client = None
+    library_client = None
     episodes = _FallbackCollection(MEMORY_DB_PATH, "episodes")
     books = _FallbackCollection(VECTOR_DB_PATH, "library")
     BACKEND = "fallback"
@@ -243,12 +284,30 @@ def add_episode(text: str, metadata: Optional[dict] = None) -> str:
     ts = metadata.get("timestamp", time.time())
     metadata["timestamp"] = ts
     doc_id = _episode_id(text, ts)
+    extra = {}
+    vecs = _embed_passages([text]) if BACKEND == "chroma" else None
+    if vecs:
+        extra["embeddings"] = vecs
     episodes.add(
         ids=[doc_id],
         documents=[text],
         metadatas=[_sanitize_metadata(metadata)],
+        **extra,
     )
     return doc_id
+
+
+def _is_fallback(col) -> bool:
+    return isinstance(col, _FallbackCollection)
+
+
+def _query(col, query: str, n_results: int, where: Optional[dict] = None):
+    """Поиск: векторный, если коллекция это умеет, иначе текстовый (dev/тесты)."""
+    if BACKEND == "chroma" and not _is_fallback(col):
+        qv = _embed_query(query)
+        if qv:
+            return col.query(query_embeddings=[qv], n_results=n_results, where=where)
+    return col.query(query_texts=[query], n_results=n_results, where=where)
 
 
 def recall_episodes(
@@ -263,21 +322,96 @@ def recall_episodes(
         where = {"timestamp": {"$gte": cutoff}}
 
     try:
-        return episodes.query(query_texts=[query], n_results=n_results, where=where)
+        return _query(episodes, query, n_results, where)
     except Exception as e:  # noqa: BLE001
         logger.warning("recall_episodes failed: %s", e)
         return {"documents": [[]], "metadatas": [[]], "ids": [[]]}
 
 
+def query_books(query: str, n_results: int = 3, where: Optional[dict] = None):
+    """Кандидаты из библиотеки для последующего переранжирования."""
+    try:
+        return _query(books, query, n_results, where or {"archived": False})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("query_books failed: %s", e)
+        return {"documents": [[]], "metadatas": [[]], "ids": [[]], "distances": [[]]}
+
+
 def recall_library(query: str, n_results: int = 3):
     """Семантический поиск по библиотеке (не archived)."""
+    return query_books(query, n_results=n_results)
+
+
+def count_books() -> int:
     try:
-        return books.query(
-            query_texts=[query], n_results=n_results, where={"archived": False}
-        )
+        return books.count()
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def add_book_chunks(ids, documents, metadatas) -> None:
+    """Записать чанки книги (векторы считаем сами — они многоязычные)."""
+    extra = {}
+    vecs = _embed_passages(list(documents)) if BACKEND == "chroma" else None
+    if vecs:
+        extra["embeddings"] = vecs
+    books.add(
+        ids=list(ids),
+        documents=list(documents),
+        metadatas=[_sanitize_metadata(m) for m in metadatas],
+        **extra,
+    )
+
+
+def migrate_legacy(limit: int = 2000) -> int:
+    """Перенести старые эпизоды под текущую модель эмбеддингов.
+
+    До появления многоязычных векторов память писалась эмбеддингами
+    all-MiniLM-L6-v2 (англоязычная модель) — на русском поиск по ним почти
+    случаен. Сами реплики целы, поэтому их достаточно пересчитать.
+    """
+    if BACKEND != "chroma" or not hasattr(_embedder, "tag"):
+        return 0
+    try:
+        if episodes.count() > 0:
+            return 0
+        legacy = episodic_client.get_or_create_collection("episodes")
+        total = legacy.count()
     except Exception as e:  # noqa: BLE001
-        logger.warning("recall_library failed: %s", e)
-        return {"documents": [[]], "metadatas": [[]], "ids": [[]]}
+        logger.debug("migrate_legacy: %s", e)
+        return 0
+    if not total:
+        return 0
+
+    moved, offset = 0, 0
+    while offset < min(total, limit):
+        try:
+            page = legacy.get(limit=256, offset=offset)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("migrate_legacy get: %s", e)
+            break
+        ids = page.get("ids") or []
+        docs = page.get("documents") or []
+        metas = page.get("metadatas") or []
+        if not ids:
+            break
+        try:
+            episodes.add(
+                ids=ids,
+                documents=docs,
+                metadatas=[_sanitize_metadata(m or {}) for m in metas],
+                embeddings=_embed_passages(docs),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("migrate_legacy add: %s", e)
+            break
+        moved += len(ids)
+        offset += len(ids)
+
+    if moved:
+        logger.info("Память: перенесено %d эпизодов на %s", moved, EMBED_TAG)
+    return moved
+
 
 
 def summarize_old(threshold_days: int = 7) -> int:

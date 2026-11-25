@@ -1,7 +1,13 @@
 """Phase-4-01: Движок безопасности на CLIPS с обязательным regex-fallback.
 
-CLIPS (clipspy) — если доступен и правила загрузились.
-Regex — всегда работает как резерв (и как основной, если CLIPS нет).
+Текст разбивается на токены и уходит в продукционную систему CLIPS
+(core/clips_rules/safety.clp) — правила видят последовательность слов, а не
+подстроку, поэтому «карта мира» больше не путается с банковской картой.
+
+Regex-набор ниже — резерв на случай, если clipspy нет или правила не
+загрузились; если CLIPS работает, берётся более строгий из двух вердиктов.
+Оба набора проверяются на одном корпусе (tests/unit/test_safety_clips.py)
+и должны давать одинаковый вердикт.
 
 Режимы:
 - strict:      warn трактуется как block
@@ -13,6 +19,8 @@ import hashlib
 import json
 import logging
 import re
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +34,8 @@ ALLOW = "allow"
 WARN = "warn"
 BLOCK = "block"
 
+_SEVERITY = {ALLOW: 0, WARN: 1, BLOCK: 2}
+
 
 @dataclass
 class SafetyResult:
@@ -33,6 +43,68 @@ class SafetyResult:
     reason: str = ""
     confidence: float = 0.0
     rule: str = ""
+
+
+@dataclass
+class Token:
+    """Слово или числовой кластер для фактов CLIPS."""
+
+    pos: int
+    kind: str  # word | number
+    text: str
+    dot: str = "no"
+    digits: int = 0
+
+
+# Числовой кластер: «123», «4111 1111 1111 1111», «+7 999 123 45 67».
+# Разделители — только пробел, дефис и скобки (не больше двух подряд).
+_CLUSTER = re.compile(r"\d(?:[ \t()\-]{0,2}\d)*")
+# Слово: буквы/цифры, внутри допускаются дефис и апостроф («пин-код»).
+_WORD = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+(?:[-'][0-9A-Za-zА-Яа-яЁё]+)*")
+
+
+def tokenize(text: str) -> List[Token]:
+    """Разбить сообщение на токены в порядке появления.
+
+    Числовые кластеры собираются первыми, чтобы «4111 1111 1111 1111»
+    осталось одним токеном: по нему считается число цифр.
+    """
+    found: List[Tuple[int, Token]] = []
+    masked = list(text)
+    for m in _CLUSTER.finditer(text):
+        raw = re.sub(r"\s+", " ", m.group(0)).strip()
+        digits = sum(ch.isdigit() for ch in raw)
+        dot = "yes" if m.end() < len(text) and text[m.end()] == "." else "no"
+        found.append((m.start(), Token(0, "number", raw, dot, digits)))
+        for i in range(m.start(), m.end()):
+            masked[i] = " "
+
+    for m in _WORD.finditer("".join(masked)):
+        word = m.group(0).lower().replace("ё", "е")
+        dot = "yes" if m.end() < len(text) and text[m.end()] == "." else "no"
+        found.append((m.start(), Token(0, "word", word, dot)))
+
+    found.sort(key=lambda item: item[0])
+    tokens = [token for _, token in found]
+    for i, token in enumerate(tokens):
+        token.pos = i
+    return tokens
+
+
+def _resolve_rules_dir(rules_dir: str) -> Path:
+    """Папка правил: настройка, рядом с модулем или внутри сборки PyInstaller."""
+    candidates = [Path(rules_dir)]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / rules_dir)
+    candidates.append(Path(__file__).resolve().parent / "clips_rules")
+    for path in candidates:
+        try:
+            if path.is_dir():
+                return path
+        except OSError:
+            continue
+    return Path(rules_dir)
 
 
 @dataclass
@@ -65,14 +137,15 @@ _RULES: List[_Pattern] = [
         0.8,
         re.compile(r"\b(?:мой|моя|мои)\s+(?:пароль|пин-?код|карт[аы]?)\b", re.I),
     ),
-    # BLOCK: угрозы насилия
+    # BLOCK: угрозы насилия (нужен адресат: «я тебя убью», «убью тебя»)
     _Pattern(
         "violence_threat", BLOCK,
         "Я не могу помогать с угрозами насилия.",
         0.85,
         re.compile(
-            r"\b(?:убью|убей|зарежу|взорву|прикончу|изобью|насилие|"
-            r"kill\s+you|i\s+will\s+kill)\b",
+            r"(?:(?:тебя|вас|его|её|ее|их)\s+(?:убью|убей|зарежу|взорву|прикончу|изобью)|"
+            r"(?:убью|убей|зарежу|взорву|прикончу|изобью)\s+(?:тебя|вас|его|её|ее|их|себя)|"
+            r"(?<!\w)насилие(?!\w)|kill\s+you|i\s+will\s+kill)",
             re.I,
         ),
     ),
@@ -136,65 +209,89 @@ _RULES: List[_Pattern] = [
 
 
 class ClipsBackend:
-    """Обёртка над clipspy. Молча отключается, если CLIPS недоступен."""
+    """Продукционная система CLIPS (clipspy 1.x). Без clipspy — отключена."""
+
+    MAX_TOKENS = 400  # длинные ответы режем: правила локальные, хвоста хватает
 
     def __init__(self, rules_dir: str):
         self.env = None
         self.available = False
-        try:
-            import clips  # noqa: F401
-        except ImportError:
-            logger.info("clipspy не установлен — используется regex-fallback")
-            return
-
-        import clips
-
-        rules_path = Path(rules_dir)
-        if not rules_path.exists():
-            logger.warning("Папка правил CLIPS не найдена: %s", rules_dir)
-            return
-
-        try:
-            env = clips.CLIPS()
-            loaded = 0
-            for clp in sorted(rules_path.glob("*.clp")):
-                env.Load(str(clp))
-                loaded += 1
-            env.Reset()
-            self.env = env
-            self.available = loaded > 0
-            logger.info("CLIPS загружен: %d правил(о)", loaded)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("CLIPS не завёлся (%s) — regex-fallback", e)
-
-    def check(self, text: str) -> Optional[SafetyResult]:
-        if not self.available or self.env is None:
-            return None
+        self.rule_count = 0
+        self._lock = threading.Lock()  # Environment не потокобезопасен
         try:
             import clips
+        except ImportError:
+            logger.warning("clipspy не установлен — используется regex-fallback")
+            return
 
-            safe = text.replace("\\", "\\\\").replace('"', '\\"')
-            self.env.Reset()
-            self.env.AssertString(f'(action (type send-message) (content "{safe}"))')
-            self.env.Run()
-            result = None
-            for template in ("block-action", "warn-action", "allow-action"):
-                facts = list(self.env.FindAllFacts())
-                for fact in facts:
-                    if fact.template.name == template:
-                        reason = str(fact["reason"]) if "reason" in fact else ""
-                        action = {"block-action": BLOCK,
-                                  "warn-action": WARN,
-                                  "allow-action": ALLOW}[template]
-                        result = SafetyResult(action, reason, 0.9, "clips:" + template)
-                        break
-                if result:
-                    break
-            self.env.Reset()
-            return result
+        rules_path = _resolve_rules_dir(rules_dir)
+        files = sorted(rules_path.glob("*.clp")) if rules_path.is_dir() else []
+        if not files:
+            logger.warning("Правила CLIPS не найдены: %s", rules_path)
+            return
+
+        try:
+            env = clips.Environment()
+            for clp in files:
+                env.load(str(clp))
+            env.reset()
+            self._token_template = env.find_template("token")
+            self.env = env
+            self.rule_count = len(list(env.rules()))
+            self.available = self.rule_count > 0
+            logger.info("CLIPS загружен: %d правил из %d файлов",
+                        self.rule_count, len(files))
+        except Exception as e:  # noqa: BLE001
+            logger.error("CLIPS не завёлся (%s) — regex-fallback", e)
+
+    def check(self, text: str) -> Optional[SafetyResult]:
+        """Вердикт CLIPS; None — правила молчат (или CLIPS недоступен)."""
+        if not self.available or self.env is None:
+            return None
+        tokens = tokenize(text)
+        if len(tokens) > self.MAX_TOKENS:
+            tokens = tokens[: self.MAX_TOKENS]
+            for i, t in enumerate(tokens):
+                t.pos = i
+        try:
+            with self._lock:
+                self.env.reset()
+                for t in tokens:
+                    self._token_template.assert_fact(
+                        pos=t.pos, kind=_symbol(t.kind), text=t.text,
+                        dot=_symbol(t.dot), digits=t.digits,
+                    )
+                self.env.run()
+                verdicts = [
+                    (str(f["action"]), str(f["rule"]), str(f["reason"]),
+                     float(f["confidence"]))
+                    for f in self.env.facts()
+                    if f.template.name == "verdict"
+                ]
+                self.env.reset()
         except Exception as e:  # noqa: BLE001
             logger.warning("CLIPS check failed (%s) — regex", e)
             return None
+
+        if not verdicts:
+            return None
+        action, rule, reason, confidence = max(
+            verdicts, key=lambda v: (_SEVERITY.get(v[0], 0), v[3])
+        )
+        return SafetyResult(action, reason, confidence, "clips:" + rule)
+
+
+def _symbol(value: str):
+    import clips
+
+    return clips.Symbol(value)
+
+
+def _stricter(a: SafetyResult, b: SafetyResult) -> SafetyResult:
+    """Строгий из двух вердиктов; при равенстве — первый (CLIPS)."""
+    if _SEVERITY.get(a.action, 0) >= _SEVERITY.get(b.action, 0):
+        return a
+    return b
 
 
 class SafetyEngine:
@@ -222,9 +319,11 @@ class SafetyEngine:
         if not text or not text.strip():
             return SafetyResult(ALLOW)
 
-        result = self.clips.check(text)
-        if result is None:
-            result = self._regex_check(text)
+        result = self._regex_check(text)
+        clips_result = self.clips.check(text)
+        if clips_result is not None:
+            # Более строгий вердикт; при равенстве — вердикт продукционной системы
+            result = _stricter(clips_result, result)
 
         result = self._apply_mode(result)
         if result.action != ALLOW:
