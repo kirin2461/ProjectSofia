@@ -49,7 +49,10 @@ TARGET = {
     "MODEL_STEP": "qwen3:1.7b",
     "MODEL_EMBED": "bge-m3",
     "MODEL_VLM": "qwen3-vl:2b",           # мультимодальная модель (зрение + текст)
-    "NUM_CTX": 32768,
+    # Слот контекста llama-server (--ctx-size) — единственное число контекста:
+    # от него же считается бюджет истории в core/context.py. Лаунчер может
+    # поднять слот по запасу VRAM и всё равно передаст его сюда через NUM_CTX.
+    "NUM_CTX": 8192,
     "NUM_PREDICT": 512,
     "TEMPERATURE": 0.7,
     "MEMORY_DB_PATH": "data/memory_db",
@@ -84,7 +87,7 @@ TARGET = {
     "LIBRARY_CHUNK_SIZE": 800,
     "LIBRARY_CHUNK_OVERLAP": 80,
     "EPISODE_SUMMARY_DAYS": 7,
-    "CONTEXT_BUDGET_TOKENS": 0,  # 0 — авто: min(6000, 35% от NUM_CTX)
+    "CONTEXT_BUDGET_TOKENS": 0,  # 0 — авто: NUM_CTX минус ответ и системная часть
 
     # Библиотека книг (PDF → Chroma → контекст ответа)
     "LIBRARY_ENABLED": True,
@@ -209,6 +212,8 @@ _ENV_MAP = {
     "STREAM_RTMP_URL": (str,),
     "TEMPERATURE": (float,),
     "MAX_HISTORY": (int,),
+    "NUM_CTX": (int,),
+    "NUM_PREDICT": (int,),
     "CONTEXT_BUDGET_TOKENS": (int,),
     "DEBUG": (bool,),
     "XTTS_MODEL_PATH": (str,),

@@ -241,8 +241,12 @@ def build_command(
 
 def server_env() -> dict:
     env = dict(os.environ)
-    # Qwen3 и родственные: отключаем «размышления» на уровне сервера.
-    env.setdefault("LLAMA_ARG_CHAT_TEMPLATE_KWARGS", '{"enable_thinking": false}')
+    # Qwen3 и родственные: «размышления» выключаем на уровне сервера.
+    # Старая переменная LLAMA_ARG_CHAT_TEMPLATE_KWARGS='{"enable_thinking":
+    # false}' устарела — сервер отвечает на неё варнингом и советует
+    # --reasoning off. Флаг --reasoning читает LLAMA_ARG_REASONING
+    # (рядом в llama-common.dll: LLAMA_ARG_REASONING_EFFORT, _PRESERVE).
+    env.setdefault("LLAMA_ARG_REASONING", "off")
     env.setdefault("LLAMA_ARG_FIT", "on")
     return env
 

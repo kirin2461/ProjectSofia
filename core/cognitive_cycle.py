@@ -16,7 +16,6 @@ from config.settings import (
     LLM_API_KEY,
     MODEL_BRAIN,
     MODEL_EXTRACTOR_ACTIVE,
-    NUM_CTX,
     NUM_PREDICT,
     TEMPERATURE,
     MAX_HISTORY,
@@ -25,6 +24,13 @@ from config.settings import (
 logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(base_url=LLM_API, api_key=LLM_API_KEY or "none")
+
+# Лимиты ответа по ролям: у каждого шага свой характер, поэтому и свой потолок.
+# llama-server понимает только max_tokens (num_predict и num_ctx из extra_body
+# он молча игнорирует), поэтому лимит уходит стандартным полем OpenAI.
+EXTRACT_MAX_TOKENS = 256     # список фактов — короткий
+MONOLOGUE_MAX_TOKENS = 128   # внутренний монолог — мысль, а не эссе
+CRITIC_MAX_TOKENS = 256      # вердикт критика — короткий
 
 SYSTEM_PERSONA = (
     "Ты — София, автономный ИИ-ассистент с когнитивной архитектурой. "
@@ -59,6 +65,8 @@ class SessionState:
         # Последний обмен: кнопки 👍/👎 относятся к нему, а не к «чему-нибудь»
         self.last_question: str = ""
         self.last_answer: str = ""
+        # Текущая озвучка (asyncio.Task): новый ответ и экстренная остановка её отменяют
+        self.tts_task = None
 
     def add_user(self, text: str):
         self.history.append({"role": "user", "content": text})
@@ -85,10 +93,8 @@ async def extract_facts(text: str) -> str:
                 },
                 {"role": "user", "content": text},
             ],
-            extra_body={
-                "num_ctx": 8192, "num_predict": 256, "think": False,
-                "cache_prompt": True,
-            },
+            max_tokens=EXTRACT_MAX_TOKENS,
+            extra_body={"cache_prompt": True},
         )
         return r.choices[0].message.content or ""
     except Exception as e:  # noqa: BLE001
@@ -148,12 +154,8 @@ async def monologue(
     r = await client.chat.completions.create(
         model=MODEL_BRAIN,
         messages=messages,
-        extra_body={
-            "num_ctx": NUM_CTX,
-            "num_predict": 128,
-            "think": True,
-            "cache_prompt": True,
-        },
+        max_tokens=MONOLOGUE_MAX_TOKENS,
+        extra_body={"cache_prompt": True},
     )
     return r.choices[0].message.content or ""
 
@@ -222,12 +224,8 @@ async def generate_response(
     stream = await client.chat.completions.create(
         model=MODEL_BRAIN,
         messages=messages,
-        extra_body={
-            "num_ctx": NUM_CTX,
-            "num_predict": NUM_PREDICT,
-            "think": False,
-            "cache_prompt": True,
-        },
+        max_tokens=NUM_PREDICT,
+        extra_body={"cache_prompt": True},
         temperature=temperature,
         stream=True,
     )
@@ -263,10 +261,8 @@ async def critic(response: str, facts: str) -> str:
                 },
                 {"role": "user", "content": f"Факты: {facts}\nОтвет: {response}"},
             ],
-            extra_body={
-                "num_ctx": NUM_CTX, "num_predict": 256, "think": True,
-                "cache_prompt": True,
-            },
+            max_tokens=CRITIC_MAX_TOKENS,
+            extra_body={"cache_prompt": True},
         )
         return r.choices[0].message.content or ""
     except Exception as e:  # noqa: BLE001

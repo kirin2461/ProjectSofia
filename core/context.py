@@ -22,6 +22,7 @@ from config.settings import (
     LLM_API_KEY,
     MODEL_EXTRACTOR_ACTIVE,
     NUM_CTX,
+    NUM_PREDICT,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,18 @@ logger = logging.getLogger(__name__)
 COMPACT_TRIGGER_MESSAGES = 8   # при скольки сообщениях пора сжимать
 COMPACT_KEEP_MESSAGES = 4      # сколько последних оставить дословно
 SUMMARY_MAX_CHARS = 900
+SUMMARY_MAX_TOKENS = 220       # сводка — тезисы, а не пересказ
+
+# Сколько токенов слота нельзя отдавать истории.
+# Ответ: ровно столько модель может сгенерировать в финальном ходе
+# (max_tokens=NUM_PREDICT), плюс служебные токены шаблона чата.
+ANSWER_RESERVE_TOKENS = NUM_PREDICT + 64
+# Системная часть того же запроса — замер на живом сервере, типичный ход:
+# персона 220, монолог 128 + обёртка и тон, вопрос ~50, фрагменты книг 873,
+# свежие данные из интернета 861, подсказка-расчёт ~80.
+SYSTEM_RESERVE_TOKENS = 2600
+# Меньше этого история не имеет смысла: пара реплик — и уже сжатие.
+MIN_BUDGET_TOKENS = 2000
 
 _client = None
 
@@ -43,26 +56,50 @@ def _llm_client():
     return _client
 
 
-def estimate_tokens(text: str) -> int:
-    """Грубая оценка токенов: для русского ~2.5 символа на токен.
+_CYRILLIC = re.compile(r"[а-яёА-ЯЁ]")
+_SPACE = re.compile(r"\s")
 
-    Точный токенизатор здесь не нужен: порог сжатия берётся с запасом в
-    треть контекста, а ошибка оценки в 20% ничего не ломает.
+
+def estimate_tokens(text: str) -> int:
+    """Оценка токенов по замерам настоящего токенизатора.
+
+    Мерено на assets/embed/multilingual-e5-small (XLM-R): связный русский
+    текст — 3.3–3.7 символа на токен, технический текст с латиницей — 2.9,
+    а цифры, разметка и JSON — 1.8. Сверка с живым сервером: персона Софии
+    (699 символов) — 214 токенов здесь против 220 у Gemma, расхождение 3%.
+
+    Старая формула «2.5 символа на токен» занижала именно плотный текст
+    (числа, формулы, ссылки, JSON) — тот, которого в промпте больше всего.
+    Поэтому считаем по видам символов и намеренно берём чуть теснее нормы:
+    ошибка в сторону сжатия дешевле, чем обрезанный сервером ответ.
     """
     if not text:
         return 0
-    return max(1, int(len(text) / 2.5) + 4)
+    cyrillic = len(_CYRILLIC.findall(text))
+    spaces = len(_SPACE.findall(text))
+    other = len(text) - cyrillic - spaces
+    return max(1, int(cyrillic / 3.0 + other / 1.9 + spaces / 10) + 4)
 
 
 def messages_tokens(messages: Iterable[dict]) -> int:
     return sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
 
 
-def budget_tokens() -> int:
-    """Сколько токенов отдаём истории диалога."""
+def budget_tokens(ctx: Optional[int] = None) -> int:
+    """Сколько токенов отдаём истории диалога.
+
+    Слот делим честно: минус ответ, минус системная часть (персона, монолог,
+    книги, веб, подсказка). Процент от слота с потолком 6000 этого не умел:
+    при слоте 8192 бюджет 6000 плюс системы и ответ давали ~8.1k токенов —
+    ровно предел сервера, и реальный ход в него не влезал.
+    """
     if CONTEXT_BUDGET_TOKENS and CONTEXT_BUDGET_TOKENS > 0:
         return int(CONTEXT_BUDGET_TOKENS)
-    return min(6000, max(2000, int(NUM_CTX * 0.35)))
+    slot = int(ctx if ctx is not None else NUM_CTX)
+    return max(
+        MIN_BUDGET_TOKENS,
+        slot - ANSWER_RESERVE_TOKENS - SYSTEM_RESERVE_TOKENS,
+    )
 
 
 def should_compact(
@@ -133,12 +170,8 @@ async def summarize_history(
             _llm_client().chat.completions.create(
                 model=MODEL_EXTRACTOR_ACTIVE,
                 messages=[{"role": "user", "content": _summary_prompt(messages, previous)}],
-                extra_body={
-                    "num_ctx": 4096,
-                    "num_predict": 220,
-                    "think": False,
-                    "cache_prompt": True,
-                },
+                max_tokens=SUMMARY_MAX_TOKENS,
+                extra_body={"cache_prompt": True},
             ),
             timeout=timeout,
         )

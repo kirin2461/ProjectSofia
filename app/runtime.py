@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from app import bootstrap, paths
+from app.envfile import read_env
 from app.llm import (
     LlamaServer,
     ModelInfo,
@@ -37,10 +38,13 @@ STAGES = (
     "Сервер Софии",
 )
 
-DEFAULT_CTX = 8192
+DEFAULT_CTX = 8192   # должно совпадать с NUM_CTX в config/settings.py
 LARGE_CTX = 16384
 LLAMA_START_TIMEOUT = 300.0
 BACKEND_START_TIMEOUT = 240.0
+
+# Ниже этого слот не опускаем: модель с 2k контекста бесполезна для диалога.
+MIN_CTX = 2048
 
 
 class StartupError(RuntimeError):
@@ -52,6 +56,29 @@ def pick_ctx(model: ModelInfo, vram_gb: float) -> int:
     if vram_gb and model.size_gb <= vram_gb * 0.6:
         return LARGE_CTX
     return DEFAULT_CTX
+
+
+def resolve_ctx(base: Path) -> Optional[int]:
+    """Слот контекста, заданный вручную (NUM_CTX в окружении или .env).
+
+    Явное число важнее догадки по VRAM: сервер и бюджет истории должны
+    считать от одного и того же слота. None — значит «решай по железу».
+    """
+    value = os.environ.get("NUM_CTX")
+    if not value:
+        value = read_env(paths.env_path(base)).get("NUM_CTX")
+    if value is None or not str(value).strip():
+        return None
+    try:
+        ctx = int(str(value).strip())
+    except (TypeError, ValueError):
+        logger.warning("NUM_CTX=%r — не число, беру значение по железу", value)
+        return None
+    if ctx < MIN_CTX:
+        logger.warning("NUM_CTX=%r меньше %d — беру значение по железу",
+                       value, MIN_CTX)
+        return None
+    return ctx
 
 
 def ensure_log_handler(log_file: Path) -> logging.Handler:
@@ -88,6 +115,7 @@ class Runtime:
         self.models: List[ModelInfo] = []
         self.llama_port = 0
         self.api_port = 0
+        self.ctx = DEFAULT_CTX
         self.provider = "llamacpp"
         self.gpu: Optional[str] = None
         self.vram_gb = 0.0
@@ -157,11 +185,13 @@ class Runtime:
         )
         self.llama_port = find_free_port(8080)
         self.report(f"Запуск llama-server на порту {self.llama_port}…", None)
+        self.ctx = resolve_ctx(self.base) or pick_ctx(self.model, self.vram_gb)
+        logger.info("Слот контекста llama-server: %d токенов", self.ctx)
         self.server = LlamaServer(
             server_exe,
             self.model,
             self.llama_port,
-            ctx=pick_ctx(self.model, self.vram_gb),
+            ctx=self.ctx,
             ngl="auto",
             threads=self.threads,
             log_file=self.base / "logs" / "llama-server.log",
@@ -178,6 +208,11 @@ class Runtime:
 
     def _apply_env(self):
         self.api_port = self.api_port or find_free_port(8000)
+        # Одно число контекста: слот, с которым запущен llama-server, уезжает
+        # в NUM_CTX. config.settings читает его при импорте (а импортируется
+        # сервер Софии уже после этого), поэтому бюджет истории считается от
+        # реального слота, а не от числа из профиля.
+        os.environ["NUM_CTX"] = str(self.ctx)
         updates = bootstrap.build_env_updates(
             provider=self.provider,
             model=self.model.name,
