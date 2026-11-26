@@ -575,9 +575,12 @@ function addMsg(role, text) {
     bubble.innerHTML = render(item.text);
     meta.appendChild(metaBtn("Копировать", "⧉", () => navigator.clipboard?.writeText(item.text)));
     meta.appendChild(metaBtn("Озвучить ещё раз", "🔊", () => speakText(item.text)));
-    const up = metaBtn("Ответ полезен", "👍", () => sendFeedback(1, item, up, down));
-    const down = metaBtn("Ответ неверен или не по делу", "👎", () => sendFeedback(-1, item, down, up));
-    meta.append(up, down);
+    // Ошибку не оценивают: это не ответ модели, а /api/feedback без вопроса отклонит её
+    if (!role.includes("error")) {
+      const up = metaBtn("Ответ полезен", "👍", () => sendFeedback(1, item, up, down));
+      const down = metaBtn("Ответ неверен или не по делу", "👎", () => sendFeedback(-1, item, down, up));
+      meta.append(up, down);
+    }
   }
   div.append(bubble, meta);
   feed.appendChild(div);

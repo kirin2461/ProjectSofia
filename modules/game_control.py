@@ -36,7 +36,31 @@ class ActionPlan:
 
 
 class BaseController:
-    """Базовый класс управления."""
+    """Базовый класс управления.
+
+    После emergency_stop() контроллер заблокирован: любое действие
+    игнорируется (с предупреждением в лог) до явного resume().
+    """
+
+    stopped: bool = False
+
+    def emergency_stop(self):
+        """Мгновенная остановка: блокировка действий и отпускание зажатого."""
+        self.stopped = True
+        logger.warning("[%s] ЭКСТРЕННАЯ ОСТАНОВКА", type(self).__name__)
+        self._release_all()
+
+    def resume(self):
+        self.stopped = False
+        logger.info("[%s] управление снова разрешено", type(self).__name__)
+
+    def _release_all(self):
+        """Отпустить кнопки мыши и клавиши, зажатые на момент остановки."""
+
+    def _blocked(self, action: str) -> bool:
+        if self.stopped:
+            logger.warning("[%s] %s отклонено: экстренная остановка", type(self).__name__, action)
+        return self.stopped
 
     def move_mouse(self, x: int, y: int, duration: float = 0.1):
         raise NotImplementedError
@@ -63,8 +87,17 @@ class BaseController:
 class MockController(BaseController):
     """Mock-контроллер для VDS. Печатает действия в лог вместо реальных."""
 
+    def __init__(self):
+        self.actions: List[tuple] = []   # что реально «выполнено» — для тестов
+
     def _log(self, action: str, **kwargs):
+        if self._blocked(action):
+            return
+        self.actions.append((action, kwargs))
         logger.info(f"[MockController] {action}: {kwargs}")
+
+    def _release_all(self):
+        logger.info("[MockController] release_all")
 
     def move_mouse(self, x: int, y: int, duration: float = 0.1):
         self._log("move_mouse", x=x, y=y, duration=duration)
@@ -95,6 +128,8 @@ class GameController(BaseController):
         self.use_directinput = use_directinput
         self._backend = None
         self._screen_size = (1920, 1080)
+        self._held_keys: List[str] = []
+        self._mouse_down = False
         self._load_backend()
 
     def _load_backend(self):
@@ -127,33 +162,57 @@ class GameController(BaseController):
             max(0, min(self._screen_size[1], y + random.randint(-max_jitter, max_jitter)))
         )
 
+    def _release_all(self):
+        # Остановка могла прийти посреди drag/key_combo из другого потока
+        for key in reversed(self._held_keys):
+            try:
+                self._backend.keyUp(key)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[GameController] keyUp(%s): %s", key, e)
+        self._held_keys.clear()
+        if self._mouse_down and hasattr(self._backend, 'mouseUp'):
+            try:
+                self._backend.mouseUp()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[GameController] mouseUp: %s", e)
+        self._mouse_down = False
+
     def move_mouse(self, x: int, y: int, duration: float = 0.1):
+        if self._blocked("move_mouse"):
+            return
         x, y = self._add_jitter(x, y)
         duration = self._humanize(duration)
-        if hasattr(self._backend, 'moveTo'):
-            self._backend.moveTo(x, y, duration=duration)
-        else:
-            self._backend.moveTo(x, y, duration=duration)
+        self._backend.moveTo(x, y, duration=duration)
 
     def click(self, x: Optional[int] = None, y: Optional[int] = None, button: str = "left"):
+        if self._blocked("click"):
+            return
         if x is not None and y is not None:
             self.move_mouse(x, y, duration=0.05)
-        if hasattr(self._backend, 'click'):
+        if hasattr(self._backend, 'click') and not self.stopped:
             self._backend.click(button=button)
 
     def drag(self, start: Tuple[int, int], end: Tuple[int, int], duration: float = 0.2):
+        if self._blocked("drag"):
+            return
         self.move_mouse(start[0], start[1], duration=0.05)
-        if hasattr(self._backend, 'mouseDown'):
+        if hasattr(self._backend, 'mouseDown') and not self.stopped:
             self._backend.mouseDown()
+            self._mouse_down = True
         self.move_mouse(end[0], end[1], duration=duration)
-        if hasattr(self._backend, 'mouseUp'):
+        if hasattr(self._backend, 'mouseUp') and self._mouse_down:
             self._backend.mouseUp()
+            self._mouse_down = False
 
     def scroll(self, amount: int, direction: str = "vertical"):
+        if self._blocked("scroll"):
+            return
         if hasattr(self._backend, 'scroll'):
             self._backend.scroll(amount)
 
     def key_press(self, key: str):
+        if self._blocked("key_press"):
+            return
         key = key.lower()
         if hasattr(self._backend, 'press'):
             self._backend.press(key)
@@ -162,14 +221,22 @@ class GameController(BaseController):
             self._backend.keyUp(key)
 
     def key_combo(self, keys: List[str]):
+        if self._blocked("key_combo"):
+            return
         keys = [k.lower() for k in keys]
         if hasattr(self._backend, 'keyDown'):
             for key in keys:
+                if self.stopped:
+                    break
                 self._backend.keyDown(key)
-            for key in reversed(keys):
+                self._held_keys.append(key)
+            for key in reversed(list(self._held_keys)):
                 self._backend.keyUp(key)
+            self._held_keys.clear()
 
     def type_text(self, text: str, interval: float = 0.01):
+        if self._blocked("type_text"):
+            return
         if hasattr(self._backend, 'typewrite'):
             self._backend.typewrite(text, interval=interval)
 
@@ -218,6 +285,7 @@ class ReactiveActions:
         """Мгновенная остановка всех действий."""
         logger.warning("[ReactiveActions] ЭКСТРЕННАЯ ОСТАНОВКА")
         self._target = None
+        self.controller.emergency_stop()
 
 
 class CognitiveActions:
@@ -295,6 +363,9 @@ class CognitiveActions:
     def execute_plans(self, plans: List[ActionPlan]):
         """Выполняет последовательность действий."""
         for plan in plans:
+            if getattr(self.controller, "stopped", False):
+                logger.warning("[CognitiveActions] план прерван экстренной остановкой")
+                break
             self.execute_plan(plan)
             if plan.delay > 0:
                 time.sleep(plan.delay)
@@ -312,9 +383,13 @@ class ActionSafety:
         self._last_action_time = 0.0
         self._action_count = 0
         self._window_start = 0.0
+        self.stopped = False
 
     def validate(self, plan: ActionPlan) -> bool:
         """Проверяет, не выходит ли действие за пределы экрана."""
+        if self.stopped:
+            logger.warning("[ActionSafety] действие отклонено: экстренная остановка")
+            return False
         if plan.coordinates:
             x, y = plan.coordinates
             if x < 0 or x > self.screen_size[0] or y < 0 or y > self.screen_size[1]:
@@ -334,10 +409,17 @@ class ActionSafety:
             return False
         return True
 
-    def emergency_stop(self):
-        """Мгновенная остановка."""
+    def emergency_stop(self, controller: Optional[BaseController] = None):
+        """Мгновенная остановка: дальше validate() отклоняет всё до resume()."""
         logger.warning("[ActionSafety] 🛑 ЭКСТРЕННАЯ ОСТАНОВКА")
-        # В реальности — остановить все потоки
+        self.stopped = True
+        if controller is not None:
+            controller.emergency_stop()
+
+    def resume(self, controller: Optional[BaseController] = None):
+        self.stopped = False
+        if controller is not None:
+            controller.resume()
 
 
 # Глобальная переменная

@@ -289,8 +289,8 @@ def _feedback_meta(payload: dict) -> dict:
     Берём их из последнего хода, только если оценивают именно его: иначе
     👍 старому ответу припишется стратегия совсем другого вопроса.
     """
-    question = str(payload.get("question") or "")
-    same = not question or question[:400] == _LAST_TURN.get("question")
+    question = str(payload.get("question") or "").strip()
+    same = bool(question) and question[:400] == str(_LAST_TURN.get("question") or "").strip()
     last = _LAST_TURN if same else {}
     try:
         sources = int(payload.get("sources") or last.get("sources") or 0)
@@ -309,11 +309,17 @@ async def api_feedback(payload: dict | None = None):
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="rating должен быть числом")
     rating = 1 if rating > 0 else (-1 if rating < 0 else 0)
+    question = str(payload.get("question") or "").strip()
+    answer = str(payload.get("answer") or "").strip()
+    # Без текста не угадываем: подставленный «последний ход» приписал бы
+    # оценку чужому ответу
+    if not question or not answer:
+        raise HTTPException(status_code=400, detail="нужны question и answer оцениваемого ответа")
     meta = _feedback_meta(payload)
     entry = feedback.record(
         rating,
-        str(payload.get("question") or _LAST_TURN.get("question") or ""),
-        str(payload.get("answer") or _LAST_TURN.get("answer") or ""),
+        question,
+        answer,
         strategy=meta["strategy"],
         sources=meta["sources"],
         model=settings.MODEL_BRAIN,
@@ -524,6 +530,8 @@ async def chat(ws: WebSocket):
         logger.info("Сессия %s закрыта", session.session_id)
     except Exception as e:  # noqa: BLE001
         logger.exception("Ошибка в сессии: %s", e)
+    finally:
+        _cancel_tts(session)
 
 
 def _payload_text(raw: str) -> str:
@@ -554,7 +562,7 @@ async def _handle_message(ws: WebSocket, session: SessionState, raw: str):
         try:
             payload = json.loads(raw)
             if payload.get("type") in ("game", "stream", "action"):
-                await _handle_command(ws, payload)
+                await _handle_command(ws, payload, session)
                 return
         except json.JSONDecodeError:
             pass
@@ -794,7 +802,7 @@ async def _handle_message(ws: WebSocket, session: SessionState, raw: str):
 
     # 7. Голос (опционально)
     if tts_engine is not None:
-        asyncio.create_task(_send_audio(ws, response_text))
+        _start_tts(session, ws, response_text)
     _trace("turn done", tts=tts_engine is not None)
 
     # 8. Критик + запись в память + XP (фоном)
@@ -875,37 +883,82 @@ async def _send_audio(ws: WebSocket, text: str):
             audio = await asyncio.to_thread(tts_engine.synthesize, chunk)
             _trace("tts done", bytes=len(audio or b""))
             if audio:
-                await ws.send_bytes(audio)
+                # Отмена посреди отправки не должна оборвать фрейм:
+                # начатый send_bytes дописывается, дальше не идём
+                await asyncio.shield(ws.send_bytes(audio))
+    except asyncio.CancelledError:
+        _trace("tts cancelled")
+        raise
     except Exception as e:  # noqa: BLE001
         logger.warning("Отправка аудио не удалась: %s", e)
 
 
+def _start_tts(session: SessionState, ws: WebSocket, text: str):
+    """Озвучка ответа; предыдущая этой же сессии отменяется."""
+    _cancel_tts(session)
+    session.tts_task = asyncio.create_task(_send_audio(ws, text))
+    return session.tts_task
+
+
+def _cancel_tts(session) -> bool:
+    """True — если озвучка ещё шла и была отменена."""
+    task = getattr(session, "tts_task", None)
+    if session is not None:
+        session.tts_task = None
+    if task is None or task.done():
+        return False
+    task.cancel()
+    return True
+
+
 def _split_for_tts(text: str, max_len: int = 220) -> list:
-    """Разбить ответ на короткие фрагменты по границам предложений."""
+    """Разбить ответ на короткие фрагменты по границам предложений.
+
+    Фрагменты — непрерывные куски текста, поэтому склейка возвращает
+    исходник без потерь. Нормализуются только пробелы: любая
+    последовательность пробельных символов становится одним пробелом,
+    пробелы по краям отбрасываются. Инвариант:
+
+        "".join(_split_for_tts(t)) == " ".join((t or "").split())
+
+    Значит, пробел на месте разреза остаётся в конце предыдущего фрагмента
+    (синтезатор обрезает его сам), а не выбрасывается. Каждый фрагмент
+    непуст после strip() и не длиннее max_len.
+    """
     import re
 
     text = " ".join((text or "").split())
     if not text:
         return []
-    parts = re.split(r"(?<=[.!?…])\s+", text)
-    chunks, buf = [], ""
-    for p in parts:
-        if not p:
-            continue
-        if len(buf) + len(p) + 1 <= max_len:
-            buf = f"{buf} {p}".strip()
-        else:
-            if buf:
-                chunks.append(buf)
-            # слишком длинное «предложение» режем по запятым/пробелам
-            while len(p) > max_len:
-                cut = p.rfind(" ", 0, max_len)
-                cut = cut if cut > 0 else max_len
-                chunks.append(p[:cut].strip())
-                p = p[cut:].strip()
-            buf = p
-    if buf:
-        chunks.append(buf)
+    max_len = max(1, int(max_len))
+    sentence = re.compile(r"[.!?…] ")
+
+    chunks, start, total = [], 0, len(text)
+    while start < total:
+        if total - start <= max_len:
+            chunks.append(text[start:])
+            break
+
+        # окно — самое большее max_len символов, начиная с текущей позиции
+        window_end = start + max_len
+        window = text[start:window_end]
+
+        cut = None
+        for m in sentence.finditer(window):
+            cut = start + m.end()        # точку с пробелом оставляем слева
+        if cut is None:
+            space = text.rfind(" ", start, window_end)
+            cut = space + 1 if space > start else window_end
+        if cut <= start:                 # max_len == 1 и первым идёт пробел
+            cut = min(start + 1, total)
+
+        chunk = text[start:cut]
+        if not chunk.strip() and cut < total:
+            cut += 1
+            chunk = text[start:cut]
+        chunks.append(chunk)
+        start = cut
+
     return chunks
 
 
@@ -965,9 +1018,30 @@ async def _post_turn(session, user_msg, response_text, facts, soar_action=None):
 
 
 # ── Команды игрового режима / стрима (Phase 6) ──────────────
-async def _handle_command(ws: WebSocket, payload: dict):
+async def _emergency_stop(session=None) -> dict:
+    """Остановить всё, что София делает руками и голосом. Честный отчёт."""
+    report = {"type": "game", "status": "stopped",
+              "controller": False, "tts_cancelled": _cancel_tts(session)}
+    if game is not None:
+        try:
+            game.emergency_stop()
+            report["controller"] = True
+        except Exception as e:  # noqa: BLE001
+            logger.error("emergency_stop контроллера не сработал: %s", e)
+            report["status"] = "error"
+            report["error"] = str(e)
+    logger.warning("EMERGENCY STOP: %s", report)
+    return report
+
+
+async def _handle_command(ws: WebSocket, payload: dict, session=None):
     ctype = payload.get("type")
     action = payload.get("action")
+
+    # Стоп должен работать всегда: даже без игрового режима он глушит голос
+    if ctype in ("game", "action") and action == "emergency_stop":
+        await ws.send_text(json.dumps(await _emergency_stop(session)))
+        return
 
     if ctype == "stream" and stream is not None:
         if action == "start":
@@ -982,9 +1056,13 @@ async def _handle_command(ws: WebSocket, payload: dict):
         return
 
     if ctype in ("game", "action") and game is not None:
-        if action == "emergency_stop":
-            logger.warning("EMERGENCY STOP")
-            await ws.send_text(json.dumps({"type": "game", "status": "stopped"}))
+        if action == "resume":
+            game.resume()
+            await ws.send_text(json.dumps({"type": "game", "status": "resumed"}))
+        elif action in ("click", "press_key") and getattr(game, "stopped", False):
+            await ws.send_text(json.dumps({
+                "type": "game", "status": "blocked",
+                "error": "Экстренная остановка: сначала команда resume."}))
         elif action == "click":
             game.click(payload.get("x"), payload.get("y"))
             await ws.send_text(json.dumps({"type": "game", "status": "clicked"}))

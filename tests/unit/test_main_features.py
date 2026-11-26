@@ -130,8 +130,9 @@ def test_feedback_meta_only_for_the_same_turn(monkeypatch):
     assert old == {"strategy": "", "sources": 0}
     same = main._feedback_meta({"question": "Сколько будет 17*23+4?"})
     assert same == {"strategy": "уточни", "sources": 2}
-    bare = main._feedback_meta({})          # без вопроса — оцениваем последний ход
-    assert bare == {"strategy": "уточни", "sources": 2}
+    # Без вопроса ход не опознать: чужую стратегию не приписываем
+    bare = main._feedback_meta({})
+    assert bare == {"strategy": "", "sources": 0}
 
 
 # ── Поиск в интернете ──────────────────────────────────────
