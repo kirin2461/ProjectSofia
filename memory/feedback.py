@@ -85,9 +85,25 @@ def read(path: Optional[Path | str] = None, limit: int = 0) -> List[dict]:
     return out[-limit:] if limit else out
 
 
+def latest(items: List[dict]) -> List[dict]:
+    """Одна оценка на ответ — последняя.
+
+    Пользователь передумал (👍 → 👎) — в файле две строки, а голос один.
+    Ответ узнаём по паре (вопрос, ответ); строки без текста ответа
+    (старые и ручные записи) опознать нельзя — они считаются каждая.
+    """
+    keyed: Dict[tuple, dict] = {}
+    for n, item in enumerate(items):
+        answer = str(item.get("answer") or "")
+        key = (str(item.get("question") or ""), answer) if answer else ("#", n)
+        keyed.pop(key, None)        # порядок — по последней оценке
+        keyed[key] = item
+    return list(keyed.values())
+
+
 def stats(path: Optional[Path | str] = None) -> dict:
     """Счёт по оценкам и разбивка по стратегиям."""
-    items = read(path)
+    items = latest(read(path))
     up = sum(1 for i in items if i.get("rating", 0) > 0)
     down = sum(1 for i in items if i.get("rating", 0) < 0)
     by_strategy: Dict[str, Dict[str, int]] = {}
@@ -120,7 +136,7 @@ def advice(path: Optional[Path | str] = None) -> str:
     Смысл — поправить самую частую жалобу, а не переписать личность: одна
     короткая поправка, которую модель может применить к следующему ответу.
     """
-    items = read(path)
+    items = latest(read(path))
     if len(items) < MIN_FOR_ADVICE:
         return ""
     st = stats(path)

@@ -425,38 +425,153 @@ def ingest_file(path: str, force: bool = False) -> bool:
 
     _assign_sections(chunks)
 
-    for start in range(0, len(chunks), BATCH):
-        part = chunks[start:start + BATCH]
-        ids, docs, metas = [], [], []
-        for j, ch in enumerate(part):
-            idx = start + j
-            ids.append(f"{fhash}_{idx}")
-            docs.append(ch["text"])
-            metas.append({
-                "source": source,
-                "title": title,
-                "author": author,
-                "chapter": ch["chapter"],
-                "section_id": ch.get("section_id", ""),
-                "page_start": ch["page_start"],
-                "page_end": ch["page_end"],
-                "file_hash": fhash,
-                "chunk": idx,
-                "archived": False,
-                "stamp": stamp,
-                "indexed_at": time.time(),
-            })
-        memory_manager.add_book_chunks(ids, docs, metas)
+    try:
+        for start in range(0, len(chunks), BATCH):
+            part = chunks[start:start + BATCH]
+            ids, docs, metas = [], [], []
+            for j, ch in enumerate(part):
+                idx = start + j
+                ids.append(f"{fhash}_{idx}")
+                docs.append(ch["text"])
+                metas.append({
+                    "source": source,
+                    "title": title,
+                    "author": author,
+                    "chapter": ch["chapter"],
+                    "section_id": ch.get("section_id", ""),
+                    "page_start": ch["page_start"],
+                    "page_end": ch["page_end"],
+                    "file_hash": fhash,
+                    "chunk": idx,
+                    "archived": False,
+                    "stamp": stamp,
+                    "indexed_at": time.time(),
+                })
+            memory_manager.add_book_chunks(ids, docs, metas)
+    except Exception as e:  # noqa: BLE001
+        # Нет векторов / Chroma недоступна — файл не проиндексирован.
+        # Молчать нельзя: иначе watcher будет «успешно» пропускать книги.
+        logger.error("Индексация %s прервана: %s", source, e)
+        return False
 
     logger.info("Проиндексирован %s: %d чанков", source, len(chunks))
     return True
 
 
+def _chunk_pages(col, page_size: int = 512, max_chunks: int = 200_000):
+    """Страницы чанков без эмбеддингов: их не читаем и не трогаем."""
+    offset, paginated = 0, True
+    while offset < max_chunks:
+        try:
+            page = col.get(limit=page_size, offset=offset,
+                           include=["documents", "metadatas"])
+        except TypeError:  # fallback-стор не умеет страницы
+            paginated = False
+            page = col.get()
+        ids = page.get("ids") or []
+        if not ids:
+            return
+        yield page
+        if not paginated or len(ids) < page_size:
+            return
+        offset += len(ids)
+
+
+def reconcile_library(library_path: str = LIBRARY_PATH) -> dict:
+    """Сверить индекс с папкой и заархивировать чанки исчезнувших файлов.
+
+    on_deleted ловит удаление только при живом watcher: книга, удалённая при
+    выключенном сервере, иначе остаётся активной навсегда и продолжает
+    выдаваться в ответах. Здесь индекс приводится к состоянию папки.
+
+    Эмбеддинги и тексты не удаляются — только archived=True, данные могут
+    понадобиться, если книгу вернут. Если папки нет вовсе (не подключён
+    диск), сверка пропускается: иначе одна неудачная проверка заархивировала
+    бы всю библиотеку.
+    """
+    summary = {
+        "archived": 0,
+        "missing": 0,
+        "missing_files": [],
+        "indexed_files": 0,
+        "chunks": 0,
+        "skipped": "",
+    }
+    folder = Path(library_path)
+    if not folder.exists():
+        summary["skipped"] = f"папка не найдена: {folder}"
+        logger.warning("Библиотека: сверка индекса пропущена — %s", summary["skipped"])
+        return summary
+
+    present = {p.name.lower() for p in folder.iterdir() if p.is_file()}
+
+    # source → активные (не archived) чанки этого файла
+    groups: dict = {}
+    try:
+        for page in _chunk_pages(books):
+            ids = page.get("ids") or []
+            metas = page.get("metadatas") or []
+            summary["chunks"] += len(ids)
+            for i, doc_id in enumerate(ids):
+                meta = dict(metas[i]) if i < len(metas) and metas[i] else {}
+                source = str(meta.get("source") or "")
+                group = groups.setdefault(source, [])
+                if source and not meta.get("archived"):
+                    group.append((doc_id, meta))
+    except Exception as e:  # noqa: BLE001
+        logger.error("Библиотека: сверка индекса не удалась: %s", e)
+        summary["skipped"] = f"ошибка чтения индекса: {e}"
+        return summary
+
+    summary["indexed_files"] = len([s for s in groups if s])
+
+    for source in sorted(groups):
+        active = groups[source]
+        if not source or source.lower() in present:
+            continue
+        summary["missing"] += 1
+        summary["missing_files"].append(source)
+        for start in range(0, len(active), 256):
+            part = active[start:start + 256]
+            meta_batch = [{**meta, "archived": True} for _, meta in part]
+            try:
+                books.update(ids=[doc_id for doc_id, _ in part],
+                             metadatas=meta_batch)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Библиотека: не удалось архивировать %s: %s", source, e)
+                break
+            summary["archived"] += len(part)
+
+    if summary["missing"]:
+        logger.warning(
+            "Библиотека: %d книг нет на диске (%s) — %d чанков помечены archived",
+            summary["missing"], ", ".join(summary["missing_files"][:5]),
+            summary["archived"],
+        )
+    else:
+        logger.info("Библиотека: сверка индекса — всё на месте (%d файлов, %d чанков)",
+                    summary["indexed_files"], summary["chunks"])
+    return summary
+
+
 def scan_library(library_path: str = LIBRARY_PATH) -> int:
-    """Индексирует все PDF в папке, пропуская неизменённые. Число новых книг."""
+    """Сверяет индекс с папкой и индексирует новые PDF. Число новых книг."""
     folder = Path(library_path)
     if not folder.exists():
         return 0
+
+    try:
+        reconcile_library(str(folder))
+    except Exception as e:  # noqa: BLE001
+        logger.error("Библиотека: сверка индекса сорвалась: %s", e)
+
+    if not memory_manager.embeddings_ready():
+        logger.error(
+            "Библиотека: индексация отключена — векторная память недоступна (%s)",
+            memory_manager.EMBED_REASON or "нет эмбеддингов",
+        )
+        return 0
+
     processed = 0
     for pdf in sorted(folder.glob("*.pdf")):
         try:

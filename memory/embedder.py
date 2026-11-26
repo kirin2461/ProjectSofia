@@ -8,7 +8,9 @@ e5 требует префиксы: "query: " для вопроса, "passage: "
 Поэтому эмбеддинги считаются здесь явно, а не через embedding_function Chroma.
 
 Файлы модели: assets/embed/<name>/ (onnx/*.onnx + tokenizer.json).
-Если файлов нет — возвращается None, вызывающий код откатывается на прежний путь.
+Если модели нет — get_embedder() возвращает None и пишет ERROR с причиной:
+тихий откат на другую модель/коллекцию запрещён (иначе накопленная память
+выглядит пустой). Повторная попытка — не чаще RETRY_SEC.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -131,23 +134,90 @@ class LocalEmbedder:
 
 
 _EMBEDDER: Optional[LocalEmbedder] = None
-_EMBEDDER_TRIED = False
+_EMBEDDER_ERROR = ""
+_EMBEDDER_ATTEMPTED = False
+_EMBEDDER_ATTEMPT_AT = 0.0
+_EMBEDDER_ATTEMPTS = 0
 _EMBEDDER_LOCK = threading.Lock()
 
+# Пауза между попытками поднять модель: разовый сбой не должен закрепляться
+# до перезапуска, но и грузить ONNX на каждый запрос нельзя.
+RETRY_SEC = 300.0
+try:
+    RETRY_SEC = float(os.environ.get("SOFIA_EMBED_RETRY_SEC") or RETRY_SEC)
+except ValueError:
+    pass
 
-def get_embedder() -> Optional[LocalEmbedder]:
-    """Ленивая инициализация (один раз на процесс). None — если модели нет."""
-    global _EMBEDDER, _EMBEDDER_TRIED
-    if _EMBEDDER_TRIED:
-        return _EMBEDDER
+
+def _model_dir_safe() -> str:
+    try:
+        return str(_model_dir())
+    except Exception:  # noqa: BLE001
+        return "assets/embed/multilingual-e5-small"
+
+
+def embedder_error() -> str:
+    """Причина, по которой векторов нет. Пустая строка — модель доступна."""
+    if _EMBEDDER is not None:
+        return ""
+    return _EMBEDDER_ERROR
+
+
+def embedder_attempts() -> int:
+    """Сколько раз пытались загрузить модель (для диагностики)."""
+    return _EMBEDDER_ATTEMPTS
+
+
+def embedder_available() -> bool:
+    return _EMBEDDER is not None
+
+
+def reset_embedder() -> None:
+    """Забыть результат загрузки — следующая попытка будет заново."""
+    global _EMBEDDER, _EMBEDDER_ERROR, _EMBEDDER_ATTEMPTED
+    global _EMBEDDER_ATTEMPT_AT, _EMBEDDER_ATTEMPTS
     with _EMBEDDER_LOCK:
-        if _EMBEDDER_TRIED:
+        _EMBEDDER = None
+        _EMBEDDER_ERROR = ""
+        _EMBEDDER_ATTEMPTED = False
+        _EMBEDDER_ATTEMPT_AT = 0.0
+        _EMBEDDER_ATTEMPTS = 0
+
+
+def get_embedder(force: bool = False) -> Optional[LocalEmbedder]:
+    """Ленивая инициализация. None — если модели нет.
+
+    Сбой не приговор: попытка повторяется не чаще RETRY_SEC (force — сейчас).
+    Падение — громкое: ERROR с причиной, без тихого отката на другую модель,
+    иначе память молча «переезжает» в другую коллекцию и выглядит пустой.
+    """
+    global _EMBEDDER, _EMBEDDER_ERROR, _EMBEDDER_ATTEMPTED
+    global _EMBEDDER_ATTEMPT_AT, _EMBEDDER_ATTEMPTS
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+    if not force and _EMBEDDER_ATTEMPTED:
+        if time.monotonic() - _EMBEDDER_ATTEMPT_AT < RETRY_SEC:
+            return None
+    with _EMBEDDER_LOCK:
+        if _EMBEDDER is not None:
             return _EMBEDDER
+        if not force and _EMBEDDER_ATTEMPTED:
+            if time.monotonic() - _EMBEDDER_ATTEMPT_AT < RETRY_SEC:
+                return None
         try:
-            _EMBEDDER = LocalEmbedder()
-            logger.debug("Эмбеддинги: %s (%s)", _EMBEDDER.name(), _EMBEDDER.model_path)
+            model = LocalEmbedder()
         except Exception as e:  # noqa: BLE001
-            logger.warning("Локальные эмбеддинги недоступны: %s", e)
-            _EMBEDDER = None
-        _EMBEDDER_TRIED = True
+            _EMBEDDER_ERROR = f"{type(e).__name__}: {e}".strip(": ")
+            logger.error(
+                "векторная память недоступна: %s, поиск по эпизодам отключён "
+                "(модель %s; новая попытка не раньше чем через %.0f с)",
+                _EMBEDDER_ERROR, _model_dir_safe(), RETRY_SEC,
+            )
+        else:
+            _EMBEDDER = model
+            _EMBEDDER_ERROR = ""
+            logger.debug("Эмбеддинги: %s (%s)", model.name(), model.model_path)
+        _EMBEDDER_ATTEMPTED = True
+        _EMBEDDER_ATTEMPT_AT = time.monotonic()
+        _EMBEDDER_ATTEMPTS += 1
     return _EMBEDDER

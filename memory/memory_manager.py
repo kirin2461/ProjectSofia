@@ -1,8 +1,10 @@
 """Phase-3-02: Управление памятью — эпизодическая + библиотека (Chroma).
 
-Эмбеддинги — локальная multilingual-e5-small (ONNX, offline). Если её файлов нет,
-пробуется bge-m3 через Ollama; если недоступна и она — Chroma default. Если
-недоступен и Chroma — лёгкий JSON-стор с hash-эмбеддингами (dev/test).
+Эмбеддинги — локальная multilingual-e5-small (ONNX, offline). Если она не
+поднялась, это ERROR и отключение поиска/записи по эпизодам: тег коллекций
+остаётся e5s, накопленная память не «исчезает». Резерв (Ollama bge-m3) —
+только явно: SOFIA_EMBED_FALLBACK=ollama, коллекции __default, статус degraded.
+Без chromadb — лёгкий JSON-стор с hash-эмбеддингами (dev/test).
 
 Публичный API:
     add_episode(text, metadata) -> id
@@ -10,12 +12,14 @@
     recall_library(query, n_results)
     summarize_old(threshold_days) -> int
     count_episodes() -> int
+    memory_status() -> dict     (для /state: видно, что память деградировала)
 """
 
 import hashlib
 import json
 import logging
 import math
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -27,6 +31,8 @@ from config.settings import (
     OLLAMA_HOST,
     EPISODES_PER_RECALL,
 )
+from memory.embedder import EMBED_TAG as _E5_TAG
+from memory.embedder import embedder_error, get_embedder
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +74,17 @@ class OllamaEmbeddingFunction:
                 )
                 r.raise_for_status()
                 vectors.append(r.json()["embedding"])
-            except Exception:  # noqa: BLE001
-                vectors.append(_hash_embed(text))
+            except Exception as e:  # noqa: BLE001
+                # Молча подмешивать hash-векторы в чужое пространство нельзя:
+                # поиск по такой коллекции станет случайным.
+                raise RuntimeError(
+                    f"Ollama {self.model} не ответила: {e}"
+                ) from e
         return vectors
 
 
 def _make_embedder():
-    """Ollama bge-m3 — только если локальной e5 нет (нет assets/embed)."""
+    """Ollama bge-m3 — только как явный резерв (SOFIA_EMBED_FALLBACK=ollama)."""
     try:
         import requests
 
@@ -82,7 +92,6 @@ def _make_embedder():
         logger.info("Память: эмбеддинги через Ollama %s", MODEL_EMBED)
         return OllamaEmbeddingFunction()
     except Exception:  # noqa: BLE001
-        logger.info("Память: hash-эмбеддинги (dev/тесты) — e5 и Ollama недоступны.")
         return None
 
 
@@ -212,22 +221,26 @@ def _sanitize_metadata(metadata: dict) -> dict:
 # ═══════════════════════════════════════════════════════════
 # Инициализация коллекций
 # ═══════════════════════════════════════════════════════════
-try:  # локальные многоязычные векторы (основной путь, работает offline)
-    from memory.embedder import get_embedder
+_embedder = None
+EMBED_TAG = _E5_TAG          # суффикс коллекций; e5s — пока резерв не включён явно
+EMBED_MODE = "unavailable"   # e5 | ollama | hash | unavailable
+EMBED_REASON = ""
+MEMORY_DEGRADED = True
 
-    _embedder = get_embedder()
-except Exception:  # noqa: BLE001
-    _embedder = None
+_WARNED: set = set()
 
-# Если локальной модели нет — остаётся старый путь (Ollama bge-m3 / Chroma default).
-# При живой e5 Ollama не опрашиваем: иначе в лог уходит ложное «hash-эмбеддинги».
-if _embedder is not None:
-    logger.info("Память: эмбеддинги %s (%s)",
-                getattr(_embedder, "model_name", _embedder.name()),
-                _embedder.model_path)
-else:
-    _embedder = _make_embedder()
-EMBED_TAG = getattr(_embedder, "tag", "default")
+
+def _warn_once(kind: str, message: str) -> None:
+    """Одна и та же деградация не должна заливать лог на каждый эпизод."""
+    if kind in _WARNED:
+        return
+    _WARNED.add(kind)
+    logger.error("Память: %s", message)
+
+
+def _fallback_mode() -> str:
+    """Явный резерв из настроек: off (по умолчанию) | ollama."""
+    return (os.environ.get("SOFIA_EMBED_FALLBACK") or "off").strip().lower()
 
 
 def _collection_name(base: str) -> str:
@@ -235,34 +248,149 @@ def _collection_name(base: str) -> str:
     return f"{base}__{EMBED_TAG}"
 
 
+def init_memory_backend() -> str:
+    """Выбрать эмбеддер и тег коллекций. Возвращает режим.
+
+    Норма — только e5. Падение e5 не переключает память на другую коллекцию:
+    тег остаётся e5s, поиск и запись отключаются громко (ERROR + статус).
+    Резерв включается лишь явно (SOFIA_EMBED_FALLBACK=ollama), живёт в
+    коллекциях __default и всегда помечен degraded — за нормальную работу
+    он не выдаётся.
+    """
+    global _embedder, EMBED_TAG, EMBED_MODE, EMBED_REASON, MEMORY_DEGRADED
+
+    model = get_embedder()
+    if model is not None:
+        _embedder = model
+        EMBED_TAG = getattr(model, "tag", _E5_TAG)
+        EMBED_MODE = "e5"
+        EMBED_REASON = ""
+        MEMORY_DEGRADED = False
+        _WARNED.clear()
+        logger.info("Память: эмбеддинги %s (%s)",
+                    getattr(model, "model_name", model.name()), model.model_path)
+        return EMBED_MODE
+
+    reason = embedder_error() or "модель эмбеддингов не загружена"
+
+    if _fallback_mode() == "ollama":
+        alt = _make_embedder()
+        if alt is not None:
+            _embedder = alt
+            EMBED_TAG = "default"
+            EMBED_MODE = "ollama"
+            EMBED_REASON = reason
+            MEMORY_DEGRADED = True
+            _WARNED.clear()
+            logger.warning(
+                "Память: РЕЗЕРВ — эмбеддинги Ollama %s, коллекции __default. "
+                "e5 недоступна: %s. Накопленная память e5s не видна, пока модель "
+                "не поднимется (проверьте /state).",
+                MODEL_EMBED, reason,
+            )
+            return EMBED_MODE
+        logger.error("Память: резерв Ollama недоступен, e5 тоже: %s", reason)
+
+    _embedder = None
+    EMBED_TAG = _E5_TAG
+    EMBED_MODE = "unavailable"
+    EMBED_REASON = reason
+    MEMORY_DEGRADED = True
+    _WARNED.clear()
+    logger.error(
+        "Память: векторная память недоступна (%s); коллекции %s и %s не тронуты, "
+        "новые эпизоды не записываются, поиск отключён",
+        reason, _collection_name("episodes"), _collection_name("library"),
+    )
+    return EMBED_MODE
+
+
+def _try_recover() -> bool:
+    """Поднять e5 без перезапуска (get_embedder сам держит паузу между попытками).
+
+    Возвращаемся только из «unavailable»: явный резерв не переключаем на лету,
+    иначе коллекции поменяются под работающими запросами.
+    """
+    if EMBED_MODE != "unavailable":
+        return False
+    if get_embedder() is None:
+        return False
+    init_memory_backend()
+    if EMBED_MODE == "e5":
+        logger.warning("Память: эмбеддинги восстановлены, поиск снова работает")
+        return True
+    return False
+
+
+def embeddings_ready() -> bool:
+    """Можно ли векторизовать текст: без этого нет ни записи, ни поиска."""
+    if BACKEND != "chroma":
+        return True
+    if EMBED_MODE in ("e5", "ollama"):
+        return True
+    return _try_recover()
+
+
+def memory_status() -> dict:
+    """Состояние памяти для /state: деградация должна быть видна, а не угадываться."""
+    return {
+        "backend": BACKEND,
+        "embeddings": EMBED_MODE,
+        "tag": EMBED_TAG,
+        "degraded": bool(MEMORY_DEGRADED),
+        "fallback": EMBED_MODE in ("ollama", "hash"),
+        "search": "off" if EMBED_MODE == "unavailable" else "on",
+        "reason": EMBED_REASON,
+        "collections": {
+            "episodes": _collection_name("episodes"),
+            "library": _collection_name("library"),
+        },
+        "episodes": count_episodes(),
+        "books": count_books(),
+    }
+
+
 def _embed_passages(texts: List[str]) -> Optional[List[List[float]]]:
-    if _embedder is None or not hasattr(_embedder, "embed_documents"):
+    if not embeddings_ready():
+        return None
+    if not hasattr(_embedder, "embed_documents"):
         return None
     return _embedder.embed_documents(texts)
 
 
 def _embed_query(text: str) -> Optional[List[float]]:
-    if _embedder is None or not hasattr(_embedder, "embed_query"):
+    if not embeddings_ready():
+        return None
+    if not hasattr(_embedder, "embed_query"):
         return None
     return _embedder.embed_query(text)
 
 
+init_memory_backend()
+
 try:
     import chromadb
 
-    _collection_kwargs = {"embedding_function": _embedder} if _embedder else {}
-    _local_kwargs = (
-        {"embedding_function": None, "metadata": {"hnsw:space": "cosine"}}
-        if hasattr(_embedder, "tag")
-        else _collection_kwargs
-    )
+    if EMBED_MODE in ("e5", "unavailable"):
+        # Векторы считаем сами (префиксы query:/passage:), Chroma их не трогает.
+        # Тег тот же e5s и при недоступной модели — старые эпизоды не «исчезают».
+        _collection_kwargs = {
+            "embedding_function": None,
+            "metadata": {"hnsw:space": "cosine"},
+        }
+    elif EMBED_MODE == "ollama":
+        # Резерв: векторы считает сама Chroma через переданную функцию.
+        _collection_kwargs = {"embedding_function": _embedder}
+    else:
+        _collection_kwargs = {}
+
     episodic_client = chromadb.PersistentClient(path=MEMORY_DB_PATH)
     library_client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
     episodes = episodic_client.get_or_create_collection(
-        _collection_name("episodes"), **_local_kwargs
+        _collection_name("episodes"), **_collection_kwargs
     )
     books = library_client.get_or_create_collection(
-        _collection_name("library"), **_local_kwargs
+        _collection_name("library"), **_collection_kwargs
     )
     BACKEND = "chroma"
 except ImportError:
@@ -272,6 +400,10 @@ except ImportError:
     episodes = _FallbackCollection(MEMORY_DB_PATH, "episodes")
     books = _FallbackCollection(VECTOR_DB_PATH, "library")
     BACKEND = "fallback"
+    EMBED_MODE = "hash"
+    EMBED_TAG = "default"
+    MEMORY_DEGRADED = True
+    EMBED_REASON = EMBED_REASON or "chromadb не установлен — hash-эмбеддинги (dev/тесты)"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -283,11 +415,18 @@ def _episode_id(text: str, timestamp: float) -> str:
 
 
 def add_episode(text: str, metadata: Optional[dict] = None) -> str:
-    """Добавить эпизод диалога. Возвращает его id."""
+    """Добавить эпизод диалога. Возвращает его id.
+
+    Если векторов нет, эпизод не пишется (текст без вектора в e5-коллекцию
+    не положить), но и падать в потоке ответа нельзя: пишем ERROR один раз.
+    """
     metadata = dict(metadata or {})
     ts = metadata.get("timestamp", time.time())
     metadata["timestamp"] = ts
     doc_id = _episode_id(text, ts)
+    if not embeddings_ready():
+        _warn_once("write", f"эпизод не сохранён — {EMBED_REASON or 'нет эмбеддингов'}")
+        return doc_id
     extra = {}
     vecs = _embed_passages([text]) if BACKEND == "chroma" else None
     if vecs:
@@ -305,12 +444,25 @@ def _is_fallback(col) -> bool:
     return isinstance(col, _FallbackCollection)
 
 
-def _query(col, query: str, n_results: int, where: Optional[dict] = None):
+def _empty_hits(with_distances: bool = False) -> dict:
+    out = {"documents": [[]], "metadatas": [[]], "ids": [[]]}
+    if with_distances:
+        out["distances"] = [[]]
+    return out
+
+
+def _query(col, query: str, n_results: int, where: Optional[dict] = None,
+           with_distances: bool = False):
     """Поиск: векторный, если коллекция это умеет, иначе текстовый (dev/тесты)."""
     if BACKEND == "chroma" and not _is_fallback(col):
         qv = _embed_query(query)
         if qv:
             return col.query(query_embeddings=[qv], n_results=n_results, where=where)
+        if EMBED_MODE in ("e5", "unavailable"):
+            # Без вектора запроса искать по e5-коллекции нечем — молча не ищем.
+            _warn_once("search",
+                       f"поиск отключён — {EMBED_REASON or 'нет эмбеддингов'}")
+            return _empty_hits(with_distances)
     return col.query(query_texts=[query], n_results=n_results, where=where)
 
 
@@ -329,16 +481,17 @@ def recall_episodes(
         return _query(episodes, query, n_results, where)
     except Exception as e:  # noqa: BLE001
         logger.warning("recall_episodes failed: %s", e)
-        return {"documents": [[]], "metadatas": [[]], "ids": [[]]}
+        return _empty_hits()
 
 
 def query_books(query: str, n_results: int = 3, where: Optional[dict] = None):
     """Кандидаты из библиотеки для последующего переранжирования."""
     try:
-        return _query(books, query, n_results, where or {"archived": False})
+        return _query(books, query, n_results, where or {"archived": False},
+                      with_distances=True)
     except Exception as e:  # noqa: BLE001
         logger.warning("query_books failed: %s", e)
-        return {"documents": [[]], "metadatas": [[]], "ids": [[]], "distances": [[]]}
+        return _empty_hits(with_distances=True)
 
 
 def recall_library(query: str, n_results: int = 3):
@@ -354,7 +507,13 @@ def count_books() -> int:
 
 
 def add_book_chunks(ids, documents, metadatas) -> None:
-    """Записать чанки книги (векторы считаем сами — они многоязычные)."""
+    """Записать чанки книги (векторы считаем сами — они многоязычные).
+
+    Без векторов запись невозможна — бросаем, чтобы индексатор не отчитался
+    «проиндексировано» там, где на самом деле ничего не сохранено.
+    """
+    if not embeddings_ready():
+        raise RuntimeError(f"эмбеддинги недоступны: {EMBED_REASON or 'нет модели'}")
     extra = {}
     vecs = _embed_passages(list(documents)) if BACKEND == "chroma" else None
     if vecs:
@@ -367,18 +526,77 @@ def add_book_chunks(ids, documents, metadatas) -> None:
     )
 
 
-def migrate_legacy(limit: int = 2000) -> int:
-    """Перенести старые эпизоды под текущую модель эмбеддингов.
+def _legacy_page(col, offset: int, size: int = 256) -> dict:
+    try:
+        return col.get(limit=size, offset=offset,
+                       include=["documents", "metadatas"])
+    except TypeError:  # fallback-стор не умеет страницы
+        return col.get()
+
+
+def _text_key(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _existing_ids(ids: List[str]) -> set:
+    """id, которые уже есть в новой коллекции (id старых записей другие, но бывают совпадения)."""
+    try:
+        got = episodes.get(ids=list(ids))
+        return set(got.get("ids") or [])
+    except TypeError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        logger.debug("migrate_legacy ids: %s", e)
+        return set()
+    try:
+        got = episodes.get()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("migrate_legacy ids: %s", e)
+        return set()
+    return {i for i in (got.get("ids") or []) if i in set(ids)}
+
+
+def _existing_texts(max_docs: int = 50000) -> set:
+    """Тексты, уже лежащие в новой коллекции: у домиграции не должно быть дублей."""
+    texts, offset, paginated = set(), 0, True
+    while offset < max_docs:
+        try:
+            page = episodes.get(limit=1000, offset=offset, include=["documents"])
+        except TypeError:
+            paginated = False
+            try:
+                page = episodes.get()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("migrate_legacy texts: %s", e)
+                break
+        except Exception as e:  # noqa: BLE001
+            logger.debug("migrate_legacy texts: %s", e)
+            break
+        docs = page.get("documents") or []
+        texts.update(_text_key(d) for d in docs if d)
+        if not paginated or len(docs) < 1000:
+            break
+        offset += 1000
+    return texts
+
+
+def migrate_legacy(limit: int = 2000, dry_run: bool = False) -> int:
+    """Донести старые эпизоды до текущей модели, не создавая дублей.
 
     До появления многоязычных векторов память писалась эмбеддингами
     all-MiniLM-L6-v2 (англоязычная модель) — на русском поиск по ним почти
     случаен. Сами реплики целы, поэтому их достаточно пересчитать.
+
+    Раньше функция выходила, если новая коллекция непуста, — и 92 старых
+    эпизода оставались в `episodes` навсегда. Теперь перенос идемпотентен:
+    пропускаются id, уже лежащие в новой коллекции, и тексты, которые там
+    уже есть (у старых записей другие id, но тот же текст).
+
+    dry_run=True — посчитать, ничего не записывая.
     """
-    if BACKEND != "chroma" or not hasattr(_embedder, "tag"):
+    if BACKEND != "chroma" or EMBED_MODE != "e5":
         return 0
     try:
-        if episodes.count() > 0:
-            return 0
         legacy = episodic_client.get_or_create_collection("episodes")
         total = legacy.count()
     except Exception as e:  # noqa: BLE001
@@ -387,33 +605,57 @@ def migrate_legacy(limit: int = 2000) -> int:
     if not total:
         return 0
 
+    known_texts = _existing_texts()
     moved, offset = 0, 0
     while offset < min(total, limit):
         try:
-            page = legacy.get(limit=256, offset=offset)
+            page = _legacy_page(legacy, offset)
         except Exception as e:  # noqa: BLE001
             logger.warning("migrate_legacy get: %s", e)
             break
         ids = page.get("ids") or []
-        docs = page.get("documents") or []
-        metas = page.get("metadatas") or []
         if not ids:
             break
-        try:
-            episodes.add(
-                ids=ids,
-                documents=docs,
-                metadatas=[_sanitize_metadata(m or {}) for m in metas],
-                embeddings=_embed_passages(docs),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("migrate_legacy add: %s", e)
-            break
-        moved += len(ids)
+        docs = page.get("documents") or []
+        metas = page.get("metadatas") or []
+        known = _existing_ids(ids)
+
+        pick = []
+        for i, doc_id in enumerate(ids):
+            text = docs[i] if i < len(docs) else ""
+            if not text or doc_id in known or _text_key(text) in known_texts:
+                continue
+            pick.append(i)
+
+        if pick:
+            new_docs = [docs[i] for i in pick]
+            if dry_run:
+                moved += len(pick)
+            else:
+                try:
+                    episodes.add(
+                        ids=[ids[i] for i in pick],
+                        documents=new_docs,
+                        metadatas=[
+                            _sanitize_metadata(metas[i] if i < len(metas) and metas[i] else {})
+                            for i in pick
+                        ],
+                        embeddings=_embed_passages(new_docs),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("migrate_legacy add: %s", e)
+                    break
+                moved += len(pick)
+                known_texts.update(_text_key(d) for d in new_docs)
         offset += len(ids)
 
     if moved:
-        logger.info("Память: перенесено %d эпизодов на %s", moved, EMBED_TAG)
+        if dry_run:
+            logger.info("Память: домиграция перенесла бы %d эпизодов (dry-run)", moved)
+        else:
+            logger.info("Память: перенесено %d эпизодов на %s", moved, EMBED_TAG)
+    else:
+        logger.debug("Память: домиграция нечего переносить (legacy=%d)", total)
     return moved
 
 

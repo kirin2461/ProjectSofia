@@ -43,12 +43,40 @@ def similar(a: str, b: str) -> float:
     return len(ta & tb) / min(len(ta), len(tb))
 
 
+# Метки разметки экстрактора: «**Цель:** …», «**Вопрос:** …» описывают
+# реплику, а не пользователя — даже со значением это не факт.
+_SERVICE_LABELS = {
+    "цель", "суть", "суть запроса", "вопрос", "тема", "запрос", "действие",
+    "статус", "ответ", "контекст", "намерение", "итог", "резюме",
+    "примечание", "ключевые факты", "факты", "профиль", "факты о пользователе",
+}
+_PLACEHOLDER_RE = re.compile(
+    r"(не указан[аоы]?|неизвест\w*|нет данных|n/?a|none|null)"
+    r"( пользователем)?", re.IGNORECASE)
+_EDGE_CHARS = " \t()[]{}«»\"'“”„.,;:!—–-"
+
+
+def _is_placeholder(value: str) -> bool:
+    v = value.strip(_EDGE_CHARS)
+    return not v or bool(_PLACEHOLDER_RE.fullmatch(v))
+
+
 def is_useful(text: str) -> bool:
     """Отсеивает то, что фактом о пользователе не является."""
     t = " ".join((text or "").split())
     if not (6 <= len(t) <= MAX_LEN):
         return False
-    if t.endswith("?") or "?" in t[:3]:
+    # Факт — утверждение; «?» в любом месте (в т.ч. перед кавычкой или
+    # скобкой) значит, что экстрактор переписал вопрос
+    if "?" in t:
+        return False
+    plain = " ".join(re.sub(r"[*_#`]+", " ", t).split())
+    label, sep, value = plain.partition(":")
+    label = label.strip().lower()
+    if sep and len(label.split()) <= 4:
+        if label in _SERVICE_LABELS or _is_placeholder(value):
+            return False
+    elif _is_placeholder(plain):
         return False
     low = t.lower()
     for noise in ("не знаю", "не помню", "без понятия", "привет", "спасибо",
@@ -155,13 +183,15 @@ class Profile:
     # ── чтение ──────────────────────────────────────────────
     def facts(self, n: int = 8, query: str = "") -> List[Fact]:
         """Топ фактов: при запросе — сначала релевантные, потом уверенные."""
-        if not self._facts:
+        # Старый мусор экстрактора остаётся в файле, но в промпт не идёт
+        facts = [f for f in self._facts if is_useful(f.text)]
+        if not facts:
             return []
         if not query:
-            ordered = sorted(self._facts, key=lambda f: -f.confidence)
+            ordered = sorted(facts, key=lambda f: -f.confidence)
             return ordered[:n]
         scored = [(0.7 * similar(f.text, query) + 0.3 * f.confidence, f)
-                  for f in self._facts]
+                  for f in facts]
         scored.sort(key=lambda p: -p[0])
         return [f for _, f in scored[:n]]
 
