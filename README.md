@@ -17,6 +17,14 @@
 
 > Расширения отключаются в конфиге. Базовый ассистент работает без них.
 
+> **Как это работает сейчас на ноутбуке.** Каскад qwen3:1.7b → qwen3:4b
+> описан для варианта с Ollama. Лаунчер (`launcher.py` / `Sofia.exe`) работает
+> иначе: находит на диске одну GGUF-модель (сейчас — Gemma-4-E4B, Q5_K_M),
+> поднимает для неё один `llama-server` и прописывает её и в `MODEL_BRAIN`, и в
+> `MODEL_EXTRACTOR` (`app/bootstrap.py`, `build_env_updates`). То есть мозг,
+> критик и экстрактор — одна и та же модель, а значения из `.env` для этих
+> двух ключей лаунчер перекрывает. Контекст — один слот на 8192 токена.
+
 ## 🎯 Целевое устройство (Target)
 
 **Где работает ассистент — единственная машина с GPU:**
@@ -91,6 +99,19 @@ python -m py_compile core/*.py memory/*.py modules/*.py main.py
 # pytest tests/unit/
 ```
 
+### Из исходников на Windows (окно Qt, как Sofia.exe)
+
+Python 3.12, чистое `.venv`. Порядок важен: torch ставится до движка голоса.
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt        # ядро, Qt, память, Soar, sympy
+.\.venv\Scripts\python.exe -m pip install -r requirements-gpu.txt    # torch/torchaudio cu128 (без NVIDIA — см. файл)
+.\.venv\Scripts\python.exe -m pip install -r requirements-voice.txt  # XTTS v2 (можно пропустить — София будет молчать)
+.\.venv\Scripts\python.exe launcher.py
+```
+Без PySide6 `launcher.py` не стартует и сообщает, что поставить; сервер без
+окна — `python main.py`.
+
 ### На ноутбуке (target — полный запуск)
 
 Вариант A — **llama.cpp / llama-server** (локальные GGUF, без Ollama):
@@ -145,6 +166,12 @@ uvicorn main:app --host 0.0.0.0 --reload
 При этом Qwen3-VL-2B **автоматически** обрабатывает экстракцию фактов из диалога — отдельная qwen3:1.7b не загружается.
 
 Без включения в конфиге — модули не загружаются и не занимают VRAM.
+
+Экстренная остановка — WebSocket-команда `{"type": "game", "action": "emergency_stop"}`:
+контроллер отпускает зажатые клавиши/кнопку мыши и отклоняет любые действия
+до `{"type": "game", "action": "resume"}`; текущая озвучка обрывается. Ответ
+честно говорит, что остановлено (`controller`, `tts_cancelled`). Глобальной
+клавиши Pause/Break пока нет.
 
 ### Профили игр
 
@@ -214,8 +241,7 @@ Google начнёт просить проверку («я не робот»); о
 Установка (опционально, Phase 1):
 ```powershell
 # 1. torch под GPU RTX 50xx (Blackwell — только CUDA 12.8+):
-pip install --index-url https://download.pytorch.org/whl/cu128 `
-    "torch==2.11.0+cu128" "torchaudio==2.11.0+cu128"
+pip install -r requirements-gpu.txt
 # 2. движок голоса:
 pip install -r requirements-voice.txt
 # 3. проверка (скачает модель ~1.9 GB при первом запуске):

@@ -226,7 +226,7 @@ LIBRARY_RERANK_DIR=D:\models\reranker     # или SOFIA_RERANK_DIR
 ## 13. Короткий чеклист после изменений
 
 ```
-.venv/Scripts/python.exe -m pytest tests -q                 # 660+ тестов
+.venv/Scripts/python.exe -m pytest tests -q                 # 918 тестов
 .venv/Scripts/python.exe scripts/eval_rag.py --min-recall 0.6
 ```
 

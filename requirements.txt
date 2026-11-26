@@ -1,3 +1,14 @@
+# Ядро и интерфейс: сервер, память, библиотека книг, продукционные системы,
+# калькулятор и Qt-окно.
+#
+#   pip install -r requirements.txt
+#
+# Чего здесь намеренно НЕТ:
+#   torch/torchaudio — requirements-gpu.txt (индекс PyTorch нельзя держать в
+#                      общем файле: он подменяет PyPI для всех пакетов);
+#   XTTS-движок      — requirements-voice.txt (ставится после torch).
+# Без них София работает, но молчит: голос отключается сам (см. modules/tts_engine.py).
+
 fastapi
 uvicorn
 websockets
@@ -15,3 +26,26 @@ numpy
 requests
 python-dotenv
 psutil
+
+# ── Интерфейс ──────────────────────────────────────────────────────────────
+# launcher.py импортирует Qt на верхнем уровне — без PySide6 не стартует
+# ни dev-запуск (python launcher.py), ни собранный Sofia.exe.
+# PySide6_Addons/Essentials/WebEngine/Pdf подтягиваются как зависимости PySide6.
+PySide6==6.12.0
+
+# ── Продукционные системы и математика ─────────────────────────────────────
+# Имя на PyPI — soar-sml (с дефисом), импортируется как soar_sml.
+# Без пакета core/soar_bridge.py молча уходит на SimulatedSoar.
+soar-sml==9.6.5
+sympy==1.14.0              # modules/calculator.py: точная арифметика для промпта
+
+# ── Явно объявленные транзитивные зависимости ──────────────────────────────
+# Импортируются прямо из кода, но раньше приходили «случайно» — через
+# chromadb (onnxruntime, tokenizers), pymupdf, EbookLib/python-docx (lxml)
+# и matplotlib из coqui-tts (Pillow). Эти пакеты объявлены, чтобы смена
+# зависимостей у chromadb/pymupdf не выключила поиск по книгам молча:
+# импорт обёрнут в try/except и деградирует без единой ошибки в логе.
+onnxruntime==1.32.0        # memory/embedder.py, memory/reranker.py, app/bootstrap.py
+tokenizers==0.22.2         # memory/embedder.py, memory/reranker.py
+lxml==6.1.3                # modules/web_search.py: разбор выдачи
+Pillow==13.0.0             # modules/screen_control.py: снимок экрана

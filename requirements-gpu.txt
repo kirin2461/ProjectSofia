@@ -1,0 +1,26 @@
+# torch/torchaudio — рантайм для голоса (XTTS) и зрения.
+#
+#   pip install -r requirements-gpu.txt
+#
+# Почему отдельным файлом: в requirements.txt torch не появляется сам —
+# coqui-tts объявляет его только в extra [cpu]/[cuda], то есть без явного
+# шага он не ставится, а TTS.api падает на импорте. При этом индекс PyTorch
+# нельзя держать в общем файле: --extra-index-url подмешивает его ко ВСЕМ
+# пакетам команды, и pip начинает искать там fastapi/numpy и прочее.
+#
+# CUDA 12.8 — единственная ветка с бинарниками под RTX 50xx (Blackwell),
+# она же работает на 40xx/30xx. Версии совпадают с проверенным окружением
+# сборки (dist\Sofia): torch 2.11.0+cu128, torchaudio 2.11.0+cu128,
+# им нужен Python 3.12 и драйвер NVIDIA >= 570.
+#
+# Только CPU (нет карты NVIDIA или нужен компактный VDS) — ставить с PyPI,
+# этот файл тогда не нужен:
+#   pip install torch==2.11.0 torchaudio==2.11.0
+#
+# Порядок установки целиком: requirements.txt -> requirements-gpu.txt ->
+# requirements-voice.txt (см. README.md, «Быстрый старт»).
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128

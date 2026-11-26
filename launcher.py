@@ -15,8 +15,23 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, Qt, QTimer
-from PySide6.QtWidgets import QApplication, QMessageBox
+try:
+    from PySide6.QtCore import QLockFile, Qt, QTimer
+    from PySide6.QtWidgets import QApplication, QMessageBox
+except ImportError as _qt_error:
+    _msg = (
+        f"Не удалось загрузить Qt (PySide6): {_qt_error}\n\n"
+        "Установите зависимости интерфейса:\n"
+        "    pip install -r requirements.txt\n\n"
+        "Сервер без окна запускается так: python main.py"
+    )
+    print(_msg, file=sys.stderr)
+    if sys.platform == "win32":
+        try:  # у собранного exe нет консоли — без окна ошибку никто не увидит
+            ctypes.windll.user32.MessageBoxW(None, _msg, "София", 0x10)
+        except Exception:  # noqa: BLE001
+            pass
+    sys.exit(2)
 
 from app import paths
 

@@ -101,7 +101,8 @@ hiddenimports = [
     # Импортируются лениво (внутри функций) — перечисляем явно
     "core.jsonx", "core.query_rewrite", "core.context",
     "memory.book_search", "memory.citation_check", "memory.feedback",
-    "memory.profile", "memory.reranker",
+    "memory.profile", "memory.reranker", "memory.embedder", "memory.library_ingest",
+    "onnxruntime", "tokenizers", "lxml.html",
     "modules.calculator", "modules.skills", "modules.autopilot",
     "modules.web_search",
     "sympy", "sympy.parsing.sympy_parser",
