@@ -5,7 +5,11 @@
 ;   (token (pos 1) (kind word)   (text "cvv") (dot no))
 ;   (token (pos 2) (kind number) (text "123") (digits 3))
 ; Слова приходят в нижнем регистре, ё заменена на е; dot = yes, если сразу
-; после слова стоит точка (сокращения «ул.», «д.», «кв.»).
+; после слова стоит точка (сокращения «ул.», «д.», «кв.»); luhn = yes, если
+; в числе 13–19 цифр и сходится контрольная сумма Луна.
+;
+; Списки слов для карт и угроз совпадают с core/safety_engine.py
+; (_CARD_WORDS, _TARGETED_VERBS, _INTENT_WORDS, _HARM_VERBS, _PERSON_TARGETS).
 ;
 ; Выход — факты verdict; движок берёт block раньше warn, затем по confidence.
 ;   (verdict (action block|warn) (rule <имя>) (reason "...") (confidence 0.9))
@@ -15,7 +19,8 @@
     (slot kind (type SYMBOL) (allowed-symbols word number))
     (slot text (type STRING))
     (slot dot (type SYMBOL) (allowed-symbols yes no) (default no))
-    (slot digits (type INTEGER) (default 0)))
+    (slot digits (type INTEGER) (default 0))
+    (slot luhn (type SYMBOL) (allowed-symbols yes no) (default no)))
 
 (deftemplate verdict
     (slot action (type SYMBOL) (allowed-symbols block warn))
@@ -25,6 +30,19 @@
 
 (deffunction has-prefix (?prefix ?word)
     (eq (str-index ?prefix ?word) 1))
+
+; Адресат насилия (человек или местоимение)
+(deffunction person-target (?w)
+    (member$ ?w (create$
+        "человека" "человек" "людей" "ребенка" "детей" "жену" "мужа"
+        "соседа" "соседку" "соседей" "мать" "маму" "отца" "папу" "брата"
+        "сестру" "друга" "подругу" "девушку" "парня" "женщину" "мужчину"
+        "учителя" "начальника" "одноклассника" "одноклассницу" "коллегу"
+        "полицейского" "кого-то" "кого-нибудь" "кого-либо"
+        "тебя" "вас" "его" "ее" "их" "всех" "него" "нее" "них"
+        "person" "someone" "somebody" "people" "human" "humans" "man"
+        "woman" "child" "children" "kids" "wife" "husband" "neighbor"
+        "neighbour" "you" "him" "her" "them")))
 
 ; ════════════════════════ BLOCK: платёжные данные ════════════════════════
 
@@ -39,9 +57,26 @@
         (reason "Я не могу обрабатывать платёжные данные (CVV/CVC).")
         (confidence 0.95))))
 
-; Номер карты: 13–19 цифр подряд
+; Номер карты: 13–19 цифр и сходится сумма Луна («4111 1111 1111 1111»)
 (defrule financial-card-number
-    (token (kind number) (digits ?d&:(and (>= ?d 13) (<= ?d 19))))
+    (token (kind number) (digits ?d&:(and (>= ?d 13) (<= ?d 19))) (luhn yes))
+    =>
+    (assert (verdict (action block) (rule financial_card)
+        (reason "Я не могу обрабатывать номера банковских карт.")
+        (confidence 0.9))))
+
+; 13–19 цифр без Луна, но рядом (±5 токенов) слово про карту или «срок действия».
+; Номер заказа, трек-номер, ИНН без такого контекста картой не считаются.
+(defrule financial-card-context
+    (token (pos ?p) (kind number) (digits ?d&:(and (>= ?d 13) (<= ?d 19))) (luhn no))
+    (or (token (pos ?c&:(<= (abs (- ?c ?p)) 5)) (kind word)
+               (text "карта" | "карты" | "карте" | "карту" | "картой"
+                     | "карточка" | "карточки" | "карточке" | "карточку" | "карточкой"
+                     | "card" | "cvv" | "cvc" | "cvv2" | "cvc2" | "visa" | "mastercard"
+                     | "maestro" | "expiry" | "expires"))
+        (and (token (pos ?s) (kind word) (text "срок"))
+             (token (pos ?c&:(and (= ?c (+ ?s 1)) (<= (abs (- ?c ?p)) 5)))
+                    (kind word) (text "действия"))))
     =>
     (assert (verdict (action block) (rule financial_card)
         (reason "Я не могу обрабатывать номера банковских карт.")
@@ -74,6 +109,47 @@
 (defrule violence-threat-en
     (token (pos ?p) (kind word) (text "kill"))
     (token (pos ?q&:(= ?q (+ ?p 1))) (kind word) (text "you" | "him" | "her" | "them"))
+    =>
+    (assert (verdict (action block) (rule violence_threat)
+        (reason "Я не могу помогать с угрозами насилия.")
+        (confidence 0.85))))
+
+; «i will kill», «i'll kill»
+(defrule violence-threat-en-will
+    (token (pos ?k) (kind word) (text "kill"))
+    (or (token (pos ?w&:(= ?w (- ?k 1))) (kind word) (text "i'll"))
+        (and (token (pos ?w&:(= ?w (- ?k 1))) (kind word) (text "will"))
+             (token (pos ?i&:(= ?i (- ?k 2))) (kind word) (text "i"))))
+    =>
+    (assert (verdict (action block) (rule violence_threat)
+        (reason "Я не могу помогать с угрозами насилия.")
+        (confidence 0.85))))
+
+; Угроза или призыв с адресатом рядом (±2 токена): «застрелю его», «убейте их»
+(defrule violence-threat-targeted
+    (token (pos ?p) (kind word)
+           (text "застрелю" | "пристрелю" | "задушу" | "покалечу" | "искалечу"
+                 | "убейте" | "зарежьте" | "избейте" | "прикончите" | "перебейте"
+                 | "застрелите"))
+    (token (pos ?o&:(and (<> ?o ?p) (<= (abs (- ?o ?p)) 2))) (kind word)
+           (text ?t&:(person-target ?t)))
+    =>
+    (assert (verdict (action block) (rule violence_threat)
+        (reason "Я не могу помогать с угрозами насилия.")
+        (confidence 0.85))))
+
+; Инструкция или намерение навредить человеку: «как убить человека»,
+; «хочу избить соседа». Тема («насилие в истории») сюда не попадает.
+(defrule violence-intent
+    (token (pos ?i) (kind word)
+           (text "как" | "хочу" | "хочется" | "собираюсь" | "планирую" | "помоги"
+                 | "помогите" | "способ" | "способы" | "how" | "want" | "wanna"))
+    (token (pos ?v&:(and (> ?v ?i) (<= ?v (+ ?i 3)))) (kind word)
+           (text "убить" | "зарезать" | "покалечить" | "искалечить" | "изувечить"
+                 | "избить" | "застрелить" | "пристрелить" | "задушить" | "отравить"
+                 | "прикончить" | "kill" | "murder" | "stab" | "shoot" | "poison"))
+    (token (pos ?o&:(and (> ?o ?i) (<> ?o ?v) (<= (abs (- ?o ?v)) 2))) (kind word)
+           (text ?t&:(person-target ?t)))
     =>
     (assert (verdict (action block) (rule violence_threat)
         (reason "Я не могу помогать с угрозами насилия.")
