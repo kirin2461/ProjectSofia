@@ -1,8 +1,8 @@
 """Phase-3-02: Управление памятью — эпизодическая + библиотека (Chroma).
 
-Эмбеддинги через bge-m3 (Ollama). Если Ollama недоступна (например, на VDS),
-Chroma использует встроенную модель по умолчанию. Если недоступен и Chroma —
-используется лёгкий JSON-стор с hash-эмбеддингами (dev/test).
+Эмбеддинги — локальная multilingual-e5-small (ONNX, offline). Если её файлов нет,
+пробуется bge-m3 через Ollama; если недоступна и она — Chroma default. Если
+недоступен и Chroma — лёгкий JSON-стор с hash-эмбеддингами (dev/test).
 
 Публичный API:
     add_episode(text, metadata) -> id
@@ -74,15 +74,15 @@ class OllamaEmbeddingFunction:
 
 
 def _make_embedder():
-    """Пытается использовать bge-m3; при ошибке — None (Chroma default)."""
+    """Ollama bge-m3 — только если локальной e5 нет (нет assets/embed)."""
     try:
         import requests
 
         requests.get(f"{OLLAMA_HOST}/api/tags", timeout=1)
-        logger.info("Память: эмбеддинги через %s", MODEL_EMBED)
+        logger.info("Память: эмбеддинги через Ollama %s", MODEL_EMBED)
         return OllamaEmbeddingFunction()
     except Exception:  # noqa: BLE001
-        logger.info("Ollama недоступна — hash/дефолтные эмбеддинги (dev/тесты).")
+        logger.info("Память: hash-эмбеддинги (dev/тесты) — e5 и Ollama недоступны.")
         return None
 
 
@@ -212,8 +212,6 @@ def _sanitize_metadata(metadata: dict) -> dict:
 # ═══════════════════════════════════════════════════════════
 # Инициализация коллекций
 # ═══════════════════════════════════════════════════════════
-_hash_embedder = _make_embedder()
-
 try:  # локальные многоязычные векторы (основной путь, работает offline)
     from memory.embedder import get_embedder
 
@@ -221,8 +219,14 @@ try:  # локальные многоязычные векторы (основн
 except Exception:  # noqa: BLE001
     _embedder = None
 
-# Если локальной модели нет — остаётся старый путь (Ollama bge-m3 / Chroma default)
-_embedder = _embedder or _hash_embedder
+# Если локальной модели нет — остаётся старый путь (Ollama bge-m3 / Chroma default).
+# При живой e5 Ollama не опрашиваем: иначе в лог уходит ложное «hash-эмбеддинги».
+if _embedder is not None:
+    logger.info("Память: эмбеддинги %s (%s)",
+                getattr(_embedder, "model_name", _embedder.name()),
+                _embedder.model_path)
+else:
+    _embedder = _make_embedder()
 EMBED_TAG = getattr(_embedder, "tag", "default")
 
 

@@ -73,7 +73,7 @@ TARGET = {
     "XP_PATH": "data/xp.json",
     "PROFILE_PATH": "data/profile.json",
     "API_PORT": 8000,
-    "API_HOST": "0.0.0.0",
+    "API_HOST": "127.0.0.1",
     "DEBUG": False,
     "MAX_HISTORY": 10,
     "DECAY_LAMBDA": 0.0003,  # полураспад PAD ~40 мин
@@ -136,7 +136,7 @@ DEV = {
     **TARGET,
     "HAS_GPU": False,
     "DEBUG": True,
-    "API_HOST": "0.0.0.0",
+    "API_HOST": "127.0.0.1",
     # На VDS не запускаем Ollama — нет GPU
     # Эти настройки для совместимости кода
     "VISION_MOCK": True,

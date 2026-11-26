@@ -69,6 +69,7 @@ class LocalEmbedder:
         self._input_names = {i.name for i in self._session.get_inputs()}
         self._lock = threading.Lock()
         self.model_path = str(onnx_path)
+        self.model_name = d.name
 
     @staticmethod
     def _pick_onnx(onnx_dir: Path) -> Optional[Path]:
@@ -144,7 +145,7 @@ def get_embedder() -> Optional[LocalEmbedder]:
             return _EMBEDDER
         try:
             _EMBEDDER = LocalEmbedder()
-            logger.info("Эмбеддинги: %s (%s)", _EMBEDDER.name(), _EMBEDDER.model_path)
+            logger.debug("Эмбеддинги: %s (%s)", _EMBEDDER.name(), _EMBEDDER.model_path)
         except Exception as e:  # noqa: BLE001
             logger.warning("Локальные эмбеддинги недоступны: %s", e)
             _EMBEDDER = None
